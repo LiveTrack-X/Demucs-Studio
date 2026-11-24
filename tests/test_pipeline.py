@@ -31,7 +31,7 @@ def job(tmp_path, monkeypatch):
 
 
 def run(source, cancelled=lambda: False):
-    return pipeline.process_file(source, Options(), lambda *_: None, cancelled)
+    return pipeline.process_file(source, Options(bleed_reduction_db=0), lambda *_: None, cancelled)
 
 
 def test_simultaneous_jobs_publish_separate_complete_sets(job):
@@ -42,6 +42,38 @@ def test_simultaneous_jobs_publish_separate_complete_sets(job):
         assert [path.read_bytes() for path in outputs.values()] == [b"vocals", b"accompaniment"]
         assert outputs["vocals"].name == "원본_vocals.wav"
     assert job.read_bytes() == b"original"
+
+
+@pytest.mark.parametrize("kind,quality", [("audio", "24"), ("video", "320")])
+def test_zero_strength_exports_original_for_every_selected_stem(job, monkeypatch, kind, quality):
+    def unexpected(*_):
+        pytest.fail("0% strength should skip inference and bleed reduction")
+
+    monkeypatch.setattr(pipeline.engine, "separate", unexpected)
+    monkeypatch.setattr(pipeline.stem_mix, "apply_in_place", unexpected)
+    options = Options(model="htdemucs_6s", stem_mode="6", separation_strength=0, bleed_reduction_db=24,
+                      output_kind=kind, quality=quality)
+    result = pipeline.process_file(job, options, lambda *_: None, lambda: False)
+    assert set(result) == set(pipeline.STEMS["6"])
+    assert all(path.read_bytes() == b"mix" for path in result.values())
+    assert all(path.suffix == (".mp4" if kind == "video" else ".wav") for path in result.values())
+
+
+def test_file_keeps_its_own_options_snapshot(job, monkeypatch):
+    options = Options(selected_stem="vocals", separation_strength=42, bleed_reduction_db=13)
+    called = []
+
+    def render(_mix, _stem, strength, reduction, *_):
+        called.append((strength, reduction))
+
+    def progress(*_):
+        options.separation_strength = 0
+        options.bleed_reduction_db = 24
+        options.selected_stem = "accompaniment"
+
+    monkeypatch.setattr(pipeline.stem_mix, "apply_in_place", render)
+    outputs = pipeline.process_file(job, options, progress, lambda: False)
+    assert called == [(42, 13)] and list(outputs) == ["vocals"]
 
 
 @pytest.mark.parametrize("cancel", [True, False])

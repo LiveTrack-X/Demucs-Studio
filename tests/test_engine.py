@@ -1,5 +1,6 @@
 import hashlib
 import io
+import random
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -97,6 +98,78 @@ class EngineTests(unittest.TestCase):
                                     progress, lambda: cancel)
             self.assertEqual(list(work.iterdir()), [])
             self.assertEqual(source.read_bytes(), original)
+
+    def test_seeded_ht_matches_official_full_bag_for_short_tail_and_grouped_stems(self):
+        import torch
+        from demucs.apply import BagOfModels, apply_model
+
+        rate = 240
+        seed = 6159
+        self.addCleanup(random.setstate, random.getstate())
+
+        class ContextModel(torch.nn.Module):
+            sources = list(engine.FOUR_SOURCES)
+            audio_channels = 2
+            samplerate = rate
+            segment = 0.20
+            crosstransformer = SimpleNamespace(emb="sin", sin_random_shift=0)
+
+            def __init__(self, index):
+                super().__init__()
+                self.scale = torch.nn.Parameter(torch.tensor((index + 1) / 4.0))
+
+            def valid_length(self, size):
+                return int(self.segment * self.samplerate)
+
+            def forward(self, mix):
+                # Context, local phase, edge padding and RNG all affect the reference.
+                random.randrange(1)
+                phase = torch.linspace(0.1, 0.9, mix.shape[-1])
+                weighted = mix * phase + (mix * phase).mean(dim=-1, keepdim=True)
+                return torch.stack([weighted * (self.scale + i) for i in range(4)], dim=1)
+
+        signatures = ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"]
+        models = {sig: ContextModel(i) for i, sig in enumerate(signatures)}
+        bag = BagOfModels(list(models.values()), torch.eye(4).tolist())
+
+        def checkpoint(url, cache, notify, cancelled):
+            return Path(url.rsplit("/", 1)[1].split("-")[0])
+
+        for length, shifts, overlap, target in [
+            (9, 1, 0.25, "vocals"), (541, 0, 0.25, "all"),
+            (541, 3, 0.375, "all"), (541, 3, 0.375, "vocals"), (541, 3, 0.375, "accompaniment"),
+        ]:
+            with self.subTest(length=length, shifts=shifts, target=target), tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                samples = np.random.default_rng(3).normal(0.2, 0.08, (length, 2)).astype("float32")
+                source = folder / "input.wav"
+                sf.write(source, samples, rate, subtype="FLOAT")
+                wave = torch.from_numpy(samples.T.copy())
+                mono = wave.mean(dim=0)
+                normalized = (wave - mono.mean()) / mono.std()
+                random.seed(seed)
+                reference = apply_model(bag, normalized[None], shifts=shifts, overlap=overlap)[0]
+                reference = reference * mono.std() + mono.mean()
+                official_rng = random.getstate()
+                expected = {"vocals": reference[3], "accompaniment": reference[:3].sum(dim=0)}
+
+                options = Options(shifts=shifts, overlap=overlap, selected_stem=target, device="cpu")
+                updates = []
+                random.seed(seed)
+                with patch.object(engine, "SAMPLE_RATE", rate), patch.object(engine, "_checkpoint", checkpoint), patch(
+                    "torch.load", side_effect=lambda path, **kw: models[path.name]
+                ) as loaded, patch("demucs.states.load_model", side_effect=lambda model: model):
+                    paths = engine.separate(source, folder, options,
+                                            lambda done, _: updates.append(done), lambda: False)
+                self.assertEqual(random.getstate(), official_rng)
+                self.assertEqual(loaded.call_count, {"vocals": 1, "accompaniment": 3, "all": 4}[target])
+                self.assertEqual(updates, sorted(updates))
+                self.assertEqual(updates[-1], 1.0)
+                for stem, path in paths.items():
+                    data, sample_rate = sf.read(path)
+                    self.assertEqual(sample_rate, rate)
+                    self.assertEqual(data.shape, samples.shape)
+                    np.testing.assert_allclose(data.T, expected[stem].detach().numpy(), rtol=2e-5, atol=2e-6)
 
 
 if __name__ == "__main__":

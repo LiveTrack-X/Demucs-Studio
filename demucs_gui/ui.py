@@ -333,6 +333,7 @@ class SettingsPanel(QFrame):
         stems.addWidget(label("저장할 스템"))
         self.stem = combo()
         bind(self.stem, "setAccessibleName", "저장할 스템")
+        bind(self.stem, "setToolTip", "보컬에는 말소리와 배경곡의 노랫소리가 함께 남을 수 있습니다.")
         stems.addWidget(self.stem, 1)
         layout.addLayout(stems)
         layout.addWidget(divider())
@@ -381,6 +382,41 @@ class SettingsPanel(QFrame):
         details = QGridLayout(advanced)
         details.setContentsMargins(0, 0, 0, 3)
         details.setVerticalSpacing(6)
+        self.separation_strength = QSpinBox()
+        self.bleed_reduction_db = QSpinBox()
+        levels = [
+            (self.separation_strength, "분리 강도", 100, "%",
+             "0%는 원본, 100%는 선택한 스템입니다. 값을 낮추면 원본의 다른 소리가 더 많이 남습니다."),
+            (self.bleed_reduction_db, "잔여음 억제", 24, " dB",
+             "0 dB에서 추가 억제를 끕니다. 다른 소리가 우세한 부분에서 스템 신호를 최대 24 dB까지 더 줄일 수 있습니다."),
+        ]
+        for i, (spin, title, maximum, unit, help_text) in enumerate(levels):
+            control = QWidget()
+            row = QHBoxLayout(control)
+            row.setContentsMargins(0, 0, 0, 0)
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, maximum)
+            spin.setRange(0, maximum)
+            spin.setSuffix(unit)
+            slider.valueChanged.connect(spin.setValue)
+            spin.valueChanged.connect(slider.setValue)
+            bind(spin, "setAccessibleName", title)
+            bind(slider, "setAccessibleName", title + " 슬라이더")
+            bind(spin, "setToolTip", help_text)
+            bind(slider, "setToolTip", help_text)
+            row.addWidget(slider, 1)
+            row.addWidget(spin)
+            caption = label(title)
+            caption.setBuddy(spin)
+            details.addWidget(caption, 2 * i, 0)
+            details.addWidget(control, 2 * i, 1)
+            help_label = label(help_text, "subtle")
+            help_label.setWordWrap(True)
+            details.addWidget(help_label, 2 * i + 1, 0, 1, 2)
+            if spin is self.bleed_reduction_db:
+                control.setEnabled(False)
+                self.separation_strength.valueChanged.connect(
+                    lambda value, row_widget=control: row_widget.setEnabled(value > 0))
         self.model_name = label("")
         self.device = combo([("auto", "자동 (CUDA 우선)"), ("cuda", "GPU (CUDA)"), ("cpu", "CPU")])
         bind(self.device, "setAccessibleName", "분리 장치 선택")
@@ -393,7 +429,7 @@ class SettingsPanel(QFrame):
         self.overlap.setSingleStep(0.05)
         bind(self.overlap, "setToolTip", "분리할 오디오 구간이 서로 겹치는 비율")
         for i, (title, widget) in enumerate([("모델 이름", self.model_name), ("장치", self.device),
-                                             ("Shifts", self.shifts), ("Overlap", self.overlap)]):
+                                             ("Shifts", self.shifts), ("Overlap", self.overlap)], start=4):
             details.addWidget(label(title), i, 0)
             details.addWidget(widget, i, 1)
         details.setColumnStretch(1, 1)
@@ -401,6 +437,7 @@ class SettingsPanel(QFrame):
         layout.addStretch()
         browse.clicked.connect(self.browse_output)
         for signal in (self.stem.currentIndexChanged, self.device.currentIndexChanged,
+                       self.separation_strength.valueChanged, self.bleed_reduction_db.valueChanged,
                        self.shifts.valueChanged, self.overlap.valueChanged, self.folder.textChanged):
             signal.connect(self.save)
         self.restore()
@@ -465,6 +502,7 @@ class SettingsPanel(QFrame):
             shifts=self.shifts.value(), overlap=self.overlap.value(), device=self.device.currentData(),
             output_kind=self.kind, audio_format=self.formats["audio"], video_format=self.formats["video"],
             quality=self.quality.value(), output_dir=self.folder.text().strip(),
+            separation_strength=self.separation_strength.value(), bleed_reduction_db=self.bleed_reduction_db.value(),
         )
 
     def apply_settings(self, config, qualities):
@@ -481,6 +519,8 @@ class SettingsPanel(QFrame):
             select(self.stem, "vocals" if config.vocals_only else config.selected_stem)
             self.shifts.setValue(config.shifts)
             self.overlap.setValue(config.overlap)
+            self.separation_strength.setValue(config.separation_strength)
+            self.bleed_reduction_db.setValue(config.bleed_reduction_db)
             select(self.device, config.device)
             self.folder.setText(config.output_dir)
         finally:
@@ -535,6 +575,9 @@ class SettingsPanel(QFrame):
             options.vocals_only = stem == "vocals"
             options.shifts = shifts
             options.overlap = 0.25
+            defaults = Options()
+            options.separation_strength = defaults.separation_strength
+            options.bleed_reduction_db = defaults.bleed_reduction_db
             self.apply_settings(options, self.qualities)
         elif source == "user":
             try:
@@ -636,11 +679,11 @@ class PreviewPane(QWidget):
         self.audio = QAudioOutput(self)
         self.audio.setVolume(0.8)
         self.player.setAudioOutput(self.audio)
-        self.source = None
+        self.entry = None
         self.pending = None
         self.output_folder = None
         self.play.clicked.connect(self.toggle)
-        self.tracks.currentIndexChanged.connect(self.switch)
+        self.tracks.currentIndexChanged.connect(self.select_track)
         self.open_dir.clicked.connect(self.open_results)
         self.player.durationChanged.connect(self.update_clock)
         self.player.positionChanged.connect(self.update_clock)
@@ -689,22 +732,33 @@ class PreviewPane(QWidget):
             if resume:
                 self.player.play()
 
-    def switch(self, *_):
+    @property
+    def source(self):
+        return self.entry.path if self.entry else None
+
+    def select_track(self, *_):
+        if self.entry:
+            self.entry.preview_choice = self.tracks.currentData()
+        self.switch()
+
+    def switch(self):
         path = self.tracks.currentData()
         if path:
             url = QUrl.fromLocalFile(str(path))
             if self.player.source() != url:
-                self.pending = (url, self.player.position(), self.player.isPlaying())
+                if self.pending and self.pending[0] == self.player.source():
+                    _, position, resume = self.pending
+                else:
+                    position, resume = self.player.position(), self.player.isPlaying()
+                self.pending = (url, position, resume)
                 self.player.setSource(url)
 
     def set_entry(self, entry, prefer_result=False):
-        previous = self.tracks.currentData()
-        same = entry is not None and self.source == entry.path
-        if not same:
+        if entry is not self.entry:
             self.pending = None
             self.player.stop()
             self.player.setSource(QUrl())
-        self.source = entry.path if entry else None
+        self.entry = entry
         self.tracks.blockSignals(True)
         self.tracks.clear()
         self.output_folder = None
@@ -713,10 +767,12 @@ class PreviewPane(QWidget):
             for stem, path in entry.outputs.items():
                 self.tracks.add_caption(STEMS.get(stem, stem), str(path))
                 self.output_folder = path.parent
-            if prefer_result and entry.outputs:
-                self.tracks.setCurrentIndex(1)
-            elif same:
-                select(self.tracks, previous)
+            result = entry.outputs.get("vocals") or next(iter(entry.outputs.values()), entry.path)
+            select(self.tracks, str(result))
+            if prefer_result:
+                entry.preview_choice = None
+            if entry.preview_choice is not None:
+                select(self.tracks, entry.preview_choice)
         else:
             self.tracks.add_caption("파일 선택", None)
         self.tracks.blockSignals(False)
@@ -734,6 +790,7 @@ class Entry:
     duration: float | None = None
     error: str = ""
     outputs: dict[str, Path] = field(default_factory=dict)
+    preview_choice: str | None = None
 
 
 class ProbeSignals(QObject):
@@ -800,7 +857,6 @@ class MainWindow(QMainWindow):
         self.entries = []
         self.worker = None
         self.batch = []
-        self.batch_options = None
         self.batch_index = 0
         self.active = False
         self.stop_batch = False
@@ -971,7 +1027,9 @@ class MainWindow(QMainWindow):
         drop_text = label("영상·음원 파일을 여기에 놓으세요", "dropTitle")
         drop_text.setWordWrap(True)
         drop_copy.addWidget(drop_text)
-        drop_copy.addWidget(label("MP4 · MKV · WAV · FLAC · MP3 외", "dropHint"))
+        self.drop_hint = label("MP4 · MKV · WAV · FLAC · MP3 외", "dropHint")
+        self.drop_hint.setWordWrap(True)
+        drop_copy.addWidget(self.drop_hint)
         drop_row.addLayout(drop_copy, 1)
         self.add = button("파일 추가", icon="plus")
         bind(self.add, "setToolTip", "파일 추가 (Ctrl+O)")
@@ -1063,7 +1121,7 @@ class MainWindow(QMainWindow):
         return footer
 
     def browse_files(self):
-        if self.active:
+        if not self.add.isEnabled():
             return
         extensions = " ".join(f"*.{ext}" for ext in sorted(AUDIO | VIDEO))
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1081,7 +1139,7 @@ class MainWindow(QMainWindow):
             self.drop_area.style().polish(self.drop_area)
 
     def dragEnterEvent(self, event):
-        if not self.active and any(url.isLocalFile() for url in event.mimeData().urls()):
+        if self.add.isEnabled() and any(url.isLocalFile() for url in event.mimeData().urls()):
             event.acceptProposedAction()
             self.set_drag(True)
 
@@ -1091,12 +1149,12 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event):
         self.set_drag(False)
-        if not self.active:
+        if self.add.isEnabled() and event.mimeData().hasUrls():
             self.add_files([url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()])
             event.acceptProposedAction()
 
     def add_files(self, paths):
-        if self.active:
+        if not self.add.isEnabled():
             return
         first = len(self.entries)
         known = {entry.path for entry in self.entries}
@@ -1112,6 +1170,8 @@ class MainWindow(QMainWindow):
             row = len(self.entries)
             entry = Entry(path)
             self.entries.append(entry)
+            if self.active:
+                self.batch.append(entry)
             self.queue.insertRow(row)
             name = QTableWidgetItem(glyph("video" if path.suffix.lower()[1:] in VIDEO else "wave"), path.name)
             name.setToolTip(str(path))
@@ -1134,7 +1194,8 @@ class MainWindow(QMainWindow):
         if rejected:
             self.log_message("지원하지 않는 파일 · {files}", files=", ".join(rejected))
             self.log_toggle.setChecked(True)
-        self.update_actions()
+        if len(self.entries) > first:
+            self.queue_changed()
 
     def probed(self, path, duration):
         for row, entry in enumerate(self.entries):
@@ -1155,7 +1216,7 @@ class MainWindow(QMainWindow):
         self.update_actions()
 
     def queue_menu(self, point):
-        if self.active or not self.queue.indexAt(point).isValid():
+        if not self.queue.indexAt(point).isValid():
             return
         menu = QMenu(self)
         again = local_action(menu, "선택 파일 다시 대기", self.retry_selected)
@@ -1164,18 +1225,23 @@ class MainWindow(QMainWindow):
         menu.exec(self.queue.viewport().mapToGlobal(point))
 
     def remove_selected(self):
-        if self.active:
+        if not self.remove.isEnabled():
             return
         self.queue.blockSignals(True)
+        removed = set()
         for row in reversed(self.selected_rows()):
-            self.entries.pop(row)
+            removed.add(self.entries.pop(row).path)
             self.queue.removeRow(row)
         self.queue.blockSignals(False)
+        if self.active:
+            # Only the tail is editable; the cursor counts dispatched jobs.
+            tail = self.batch_index + 1
+            self.batch[tail:] = [entry for entry in self.batch[tail:] if entry.path not in removed]
         self.selection_changed()
-        self.reset_footer()
+        self.queue_changed()
 
     def clear_queue(self):
-        if self.active:
+        if not self.clear.isEnabled():
             return
         self.entries.clear()
         self.queue.setRowCount(0)
@@ -1183,14 +1249,24 @@ class MainWindow(QMainWindow):
         self.reset_footer()
 
     def retry_selected(self):
-        if self.active:
+        if not self.retry.isEnabled():
             return
         for row in self.selected_rows():
             entry = self.entries[row]
+            if entry.status in ("대기", "처리 중"):
+                continue
             entry.status = "대기"
             entry.error = ""
             self.set_row(entry, 0)
-        self.reset_footer()
+            if self.active:
+                self.batch.append(entry)
+        self.queue_changed()
+
+    def queue_changed(self):
+        if self.active:
+            self.on_progress(self.fraction, self.last_stage)
+        else:
+            self.reset_footer()
         self.update_actions()
 
     def reset_footer(self):
@@ -1202,12 +1278,16 @@ class MainWindow(QMainWindow):
 
     def update_actions(self):
         rows = self.selected_rows()
-        self.add.setEnabled(not self.active)
-        self.clear.setEnabled(bool(self.entries) and not self.active)
-        self.remove.setEnabled(bool(rows) and not self.active)
+        statuses = [self.entries[row].status for row in rows]
+        editable = not self.close_after_stop and not self.update_footer.installing
+        self.add.setEnabled(editable)
+        self.clear.setEnabled(editable and bool(self.entries) and not self.active)
+        self.remove.setEnabled(editable and bool(rows) and "처리 중" not in statuses)
         self.remove_action.setEnabled(self.remove.isEnabled())
-        self.retry.setEnabled(not self.active and any(self.entries[i].status != "대기" for i in rows))
-        self.options_panel.setEnabled(not self.active)
+        self.retry.setEnabled(editable and any(status not in ("대기", "처리 중") for status in statuses))
+        self.options_panel.setEnabled(editable)
+        hint = "설정 변경은 다음 파일부터 적용됩니다." if self.active else "MP4 · MKV · WAV · FLAC · MP3 외"
+        bind(self.drop_hint, "setText", hint)
         self.cancel.setEnabled(self.active and not self.stop_batch)
         self.start.setEnabled(not self.active and not self.update_footer.installing
                               and any(e.status == "대기" for e in self.entries))
@@ -1222,16 +1302,13 @@ class MainWindow(QMainWindow):
         self.batch = [e for e in self.entries if e.status == "대기"]
         if not self.batch:
             return
-        self.batch_options = self.options_panel.options()
         self.active = True
         self.batch_index = 0
         self.stop_batch = False
         self.began = time.monotonic()
         self.fraction = 0.0
-        self.finished_counts = {}
-        self.log_message("분리 시작 · {count}개 · {model} · {format} · {quality}",
-                         count=len(self.batch), model=self.batch_options.model,
-                         format=self.batch_options.format.upper(), quality=self.batch_options.quality)
+        self.finished_counts = {status: 0 for status in ("완료", "실패", "취소")}
+        self.log_message("분리 시작 · {count}개", count=len(self.batch))
         self.clock.start()
         self.update_actions()
         self.next_file()
@@ -1245,11 +1322,15 @@ class MainWindow(QMainWindow):
         self.last_stage = ""
         self.fraction = 0.0
         self.set_row(entry, 0)
-        self.log_message("{name} · 처리 시작", name=entry.path.name)
+        options = self.options_panel.options()
+        self.log_message("{name} · 처리 시작 · {model} · {format} · {quality}",
+                         name=entry.path.name, model=options.model, format=options.format.upper(),
+                         quality=options.quality)
         self.on_progress(0, "시작 중")
-        self.worker = FileWorker(entry.path, self.batch_options, self)
+        self.worker = FileWorker(entry.path, options, self)
         self.worker.progress.connect(self.on_progress)
         self.worker.finished.connect(self.file_finished)
+        self.update_actions()
         self.worker.start()
 
     def set_row(self, entry, value=None):
@@ -1267,6 +1348,9 @@ class MainWindow(QMainWindow):
 
     def on_progress(self, fraction, detail):
         if not self.active or self.batch_index >= len(self.batch):
+            return
+        if self.worker and self.worker.stop.is_set():
+            self.update_total()
             return
         entry = self.batch[self.batch_index]
         self.fraction = fraction
@@ -1302,15 +1386,16 @@ class MainWindow(QMainWindow):
         entry = self.batch[self.batch_index]
         entry.status = worker.status
         entry.error = worker.error
-        if worker.status == "완료":
-            entry.outputs = worker.outputs
+        entry.outputs = worker.outputs if worker.status == "완료" else {}
+        entry.preview_choice = None
         self.set_row(entry, 1 if entry.status == "완료" else None)
         self.log_message("{name} · {status}" + (" · {detail}" if entry.error else ""),
                          name=entry.path.name, status=entry.status, detail=entry.error)
         if entry.error:
             self.log_toggle.setChecked(True)
         if entry.path == self.preview.source:
-            self.preview.set_entry(entry, prefer_result=entry.status == "완료" and not self.preview.player.isPlaying())
+            self.preview.set_entry(entry)
+        self.finished_counts[entry.status] += 1
         self.batch_index += 1
         self.fraction = 0.0
         self.worker = None
@@ -1321,8 +1406,7 @@ class MainWindow(QMainWindow):
         self.update_total()
         self.active = False
         self.clock.stop()
-        self.finished_counts = {status: sum(e.status == status for e in self.batch)
-                                for status in ["완료", "실패", "취소", "대기"]}
+        self.finished_counts["대기"] = len(self.batch) - self.batch_index
         self.finished_elapsed = time_text(time.monotonic() - self.began)
         self.show_batch_summary()
         self.log_message("{summary}", summary=self.finished_counts)

@@ -33,6 +33,8 @@ class Options:
     quality: str = "24"
     output_dir: str = ""
     selected_stem: str = "all"
+    separation_strength: int = 100
+    bleed_reduction_db: int = 6
 
     @property
     def format(self) -> str:
@@ -51,6 +53,10 @@ class Options:
             raise ValueError(msg("연산 장치를 다시 선택해 주세요."))
         if not 0 <= self.shifts <= 10 or not 0 <= self.overlap <= 0.99:
             raise ValueError(msg("Shifts 또는 Overlap 값이 범위를 벗어났습니다."))
+        if type(self.separation_strength) is not int or not 0 <= self.separation_strength <= 100:
+            raise ValueError(msg("분리 강도는 0~100% 사이의 정수로 설정해 주세요."))
+        if type(self.bleed_reduction_db) is not int or not 0 <= self.bleed_reduction_db <= 24:
+            raise ValueError(msg("잔여음 억제는 0~24 dB 사이의 정수로 설정해 주세요."))
         if self.output_kind not in ("audio", "video"):
             raise ValueError(msg("내보낼 파일 유형을 선택해 주세요."))
         if self.video_format not in ("mp4", "mkv") or self.audio_format not in ("wav", "flac", "mp3", "aac", "m4a"):

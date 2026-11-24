@@ -1,10 +1,12 @@
+import json
 import os
 import time
 import wave
 
 import pytest
-from PySide6.QtCore import QLocale, QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QLocale, QSettings, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QSlider
 
 from demucs_gui.ui import Entry, MainWindow, select
 
@@ -73,10 +75,13 @@ def test_stem_model_cards_and_builtin_presets(application, tmp_path):
     panel.format.buttons["mkv"].click()
     for name, mode, stem in [("backing", "2", "accompaniment"), ("vocal", "2", "vocals"),
                               ("instruments", "4", "all")]:
+        panel.separation_strength.setValue(73)
+        panel.bleed_reduction_db.setValue(20)
         select(panel.presets, "builtin/" + name)
         panel.apply_button.click()
         options = panel.options()
         assert (options.stem_mode, options.selected_stem, options.format) == (mode, stem, "mkv")
+        assert (options.separation_strength, options.bleed_reduction_db) == (100, 6)
         options.validate()
     window.close()
 
@@ -94,6 +99,8 @@ def test_named_preset_lifecycle(application, tmp_path, monkeypatch):
     panel.quality.buttons["192"].click()
     panel.shifts.setValue(7)
     panel.overlap.setValue(0.65)
+    panel.separation_strength.setValue(81)
+    panel.bleed_reduction_db.setValue(17)
     select(panel.device, "cpu")
     panel.folder.setText(str(tmp_path))
     expected = panel.options()
@@ -101,6 +108,8 @@ def test_named_preset_lifecycle(application, tmp_path, monkeypatch):
     monkeypatch.setattr(panel, "ask_preset_name", lambda: name)
     panel.save_button.click()
     assert panel.presets.currentData() == "user/" + name
+    panel.separation_strength.setValue(0)
+    panel.bleed_reduction_db.setValue(1)
     panel.format.buttons["mp4"].click()
     confirmations = []
     def reject(*args):
@@ -114,6 +123,7 @@ def test_named_preset_lifecycle(application, tmp_path, monkeypatch):
     reopened = MainWindow(QSettings(path, QSettings.Format.IniFormat))
     panel = reopened.options_panel
     assert panel.options().format == "mp4"
+    assert panel.separation_strength.value() == 0 and not panel.bleed_reduction_db.isEnabled()
     select(panel.presets, "user/" + name)
     panel.apply_button.click()
     assert panel.options() == expected
@@ -130,6 +140,41 @@ def test_named_preset_lifecycle(application, tmp_path, monkeypatch):
     panel.delete_preset_dialog()
     assert not panel.custom_presets()
     reopened.close()
+
+
+def test_separation_controls_and_legacy_presets(application, tmp_path):
+    settings = QSettings(str(tmp_path / "levels.ini"), QSettings.Format.IniFormat)
+    settings.setValue("language", "ko")
+    legacy = {"shifts": 4, "quality": "16"}
+    settings.setValue("options", json.dumps(legacy))
+    settings.setValue("userPresets", json.dumps({"legacy": {"options": legacy, "qualities": {}}}))
+    window = MainWindow(settings)
+    panel = window.options_panel
+    panel.advanced_toggle.click()
+    strength, bleed = panel.separation_strength, panel.bleed_reduction_db
+    assert (panel.shifts.value(), panel.options().quality) == (4, "16")
+    assert (strength.minimum(), strength.maximum(), strength.text()) == (0, 100, "100%")
+    assert (bleed.minimum(), bleed.maximum(), bleed.text()) == (0, 24, "6 dB")
+    assert (strength.accessibleName(), bleed.accessibleName()) == ("분리 강도", "잔여음 억제")
+    sliders = {item.accessibleName(): item for item in panel.findChildren(QSlider)}
+    sliders["잔여음 억제 슬라이더"].setValue(18)
+    sliders["분리 강도 슬라이더"].setValue(0)
+    assert strength.value() == 0 and bleed.value() == 18
+    assert not bleed.isEnabled() and not sliders["잔여음 억제 슬라이더"].isEnabled()
+
+    select(window.language_box, "en")
+    assert (strength.accessibleName(), bleed.accessibleName()) == ("Separation strength", "Bleed reduction")
+    assert sliders["분리 강도 슬라이더"].accessibleName() == "Separation strength slider"
+    assert "original mix" in strength.toolTip() and "24 dB" in bleed.toolTip()
+    strength.selectAll()
+    QTest.keyClicks(strength, "37")
+    QTest.keyClick(strength, Qt.Key_Return)
+    assert bleed.isEnabled() and (strength.value(), bleed.value()) == (37, 18)
+    assert (sliders["분리 강도 슬라이더"].value(), sliders["잔여음 억제 슬라이더"].value()) == (37, 18)
+    select(panel.presets, "user/legacy")
+    panel.apply_button.click()
+    assert (panel.shifts.value(), strength.value(), bleed.value()) == (4, 100, 6)
+    window.close()
 
 
 def test_closing_window_releases_preview_media(application, tmp_path):

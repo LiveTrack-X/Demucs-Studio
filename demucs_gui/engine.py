@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import random
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
@@ -117,11 +118,12 @@ def _load_ensemble(options, sources, groups, device, progress, cancelled):
     totals = [sum(column) for column in zip(*weights)]
     selected = {s for group in groups.values() for s in group}
     # Each htdemucs_ft checkpoint contributes to exactly one stem.
-    needed = [(sig, row) for sig, row in zip(signatures, weights)
+    needed = [(slot, sig, row) for slot, (sig, row) in enumerate(zip(signatures, weights))
               if any(w and s in selected for s, w in zip(sources, row))]
-    ensemble = []
+    # Keep the slot of skipped members: the reference draws one shift per full bag member.
+    ensemble = [None] * len(signatures)
     cache = Path(torch.hub.get_dir()) / "checkpoints"
-    for index, (sig, row) in enumerate(needed):
+    for index, (slot, sig, row) in enumerate(needed):
         _check_cancel(cancelled)
 
         def notify(fraction, message):
@@ -139,7 +141,7 @@ def _load_ensemble(options, sources, groups, device, progress, cancelled):
         for group in groups.values():
             mix.append([row[i] / totals[i] if s in group else 0.0
                         for i, s in enumerate(model.sources)])
-        ensemble.append((model.to(device), torch.tensor(mix, dtype=torch.float32, device=device)))
+        ensemble[slot] = model.to(device), torch.tensor(mix, dtype=torch.float32, device=device)
     return ensemble
 
 
@@ -203,13 +205,151 @@ def _overlap_add(source, writers, window, overlap, predict, cancelled):
         start += flush
 
 
+def _ht_chunks(source, model, matrix, shift, overlap, mean, std, device, cancelled):
+    """Stream one official shifted overlap-add pass in original-track coordinates."""
+    import numpy as np
+    import torch
+    from demucs.apply import apply_model
+
+    length = source.frames
+    segment = int(SAMPLE_RATE * model.segment)
+    stride = max(1, int((1 - overlap) * segment))
+    positions = np.arange(segment, dtype=np.float32)
+    triangle = np.minimum(positions + 1, segment - positions)
+    triangle /= triangle.max()
+    accumulated = np.zeros((len(matrix), 2, segment), dtype=np.float32)
+    weights = np.zeros(segment, dtype=np.float32)
+
+    for start in range(-shift, length, stride):
+        _check_cancel(cancelled)
+        size = min(segment, length - start)
+        valid = model.valid_length(size) if hasattr(model, "valid_length") else size
+        trim = (valid - size) // 2
+        # TensorChunk.padded takes live context from its parent track, even for
+        # the partial tail. Outside the recording the *normalized* signal is zero.
+        left = start - trim
+        begin, end = max(0, left), min(length, left + valid)
+        batch = np.zeros((2, valid), dtype=np.float32)
+        if end > begin:
+            source.seek(begin)
+            audio = source.read(end - begin, dtype="float32", always_2d=True)
+            if len(audio) != end - begin:
+                raise RuntimeError(msg("디코딩된 오디오의 샘플 수가 헤더와 다릅니다."))
+            batch[:, begin - left:end - left] = (audio.T - mean) / std
+        with torch.inference_mode():
+            mix = torch.from_numpy(batch).unsqueeze(0).to(device)
+            prediction = apply_model(model, mix, shifts=0, split=False, device=device)[0]
+            cropped = prediction[..., trim:trim + size]
+            estimates = (matrix @ cropped.flatten(1)).reshape(len(matrix), 2, size).cpu().numpy()
+        if not np.isfinite(estimates).all():
+            raise RuntimeError(msg("모델 출력의 샘플 수 또는 값이 올바르지 않습니다."))
+        accumulated[:, :, :size] += estimates * triangle[:size]
+        weights[:size] += triangle[:size]
+        flush = min(stride, size)
+        skip = max(0, -start)
+        if skip < flush:
+            yield start + skip, accumulated[:, :, skip:flush] / weights[skip:flush]
+        keep = segment - flush
+        accumulated[:, :, :keep] = accumulated[:, :, flush:]
+        weights[:keep] = weights[flush:]
+        accumulated[:, :, keep:] = 0
+        weights[keep:] = 0
+
+
+def _separate_ht(source, writers, ensemble, groups, options, mean, std, device, report, cancelled):
+    """One pass per member and shift. Accumulate only the contributing stem files."""
+    repeats = max(1, options.shifts)
+    max_shift = SAMPLE_RATE // 2
+    passes = []
+    last_pass = {}
+    for member in ensemble:
+        if member is None:
+            passes.extend([None] * repeats)
+            continue
+        model, matrix = member
+        rows = matrix.any(dim=1).nonzero(as_tuple=True)[0].tolist()
+        passes.extend([(model, matrix[rows], rows)] * repeats)
+        for row in rows:
+            last_pass[row] = len(passes) - 1
+
+    written = set()
+    dc = [len(group) * mean for group in groups.values()]
+    active_passes = sum(step is not None for step in passes)
+    completed = 0
+    for index, step in enumerate(passes):
+        _check_cancel(cancelled)
+        shift = max_shift - random.randint(0, max_shift) if options.shifts else 0
+        if step is None:
+            # The four published htdemucs_ft members share segment and positional
+            # embedding settings. Its sinusoidal transformer consumes one Python
+            # RNG draw per chunk, even when sin_random_shift == 0. Preserve the
+            # next member's shift without loading or running a zero-weight model.
+            representative = next(member[0] for member in ensemble if member is not None)
+            transformer = getattr(representative, "crosstransformer", None)
+            if transformer is not None and transformer.emb == "sin":
+                segment = int(SAMPLE_RATE * representative.segment)
+                stride = max(1, int((1 - options.overlap) * segment))
+                for _ in range(-shift, source.frames, stride):
+                    random.randrange(transformer.sin_random_shift + 1)
+            continue
+        model, projection, rows = step
+        chunks = _ht_chunks(source, model, projection, shift, options.overlap, mean, std, device, cancelled)
+        for start, estimates in chunks:
+            for row, stem in zip(rows, estimates):
+                writer = writers[row]
+                block = stem.T
+                if row in written:
+                    writer.seek(start)
+                    block += writer.read(len(block), dtype="float32", always_2d=True)
+                if last_pass[row] == index:
+                    block *= std / repeats
+                    block += dc[row]
+                writer.seek(start)
+                writer.write(block)
+            report((completed + (start + estimates.shape[-1]) / source.frames) / active_passes)
+        written.update(rows)
+        completed += 1
+
+
+def _separate_mdx(source, writers, ensemble, groups, options, mean, std, device, report, cancelled):
+    """Retain the short-window path for the legacy MDX model."""
+    import torch
+    from demucs.apply import apply_model
+
+    ensemble = [member for member in ensemble if member is not None]
+    seconds = min(8.0, *(float(model.segment) for model, _ in ensemble))
+    window = int(SAMPLE_RATE * seconds) - (SAMPLE_RATE // 2 if options.shifts else 0)
+    repeats = max(1, options.shifts)
+    dc = torch.tensor([len(group) * mean for group in groups.values()],
+                      dtype=torch.float32, device=device).reshape(-1, 1, 1)
+
+    @torch.inference_mode()
+    def predict(audio, start, flush):
+        mix = torch.from_numpy(audio.T.copy()).to(device)
+        mix.sub_(mean).div_(std)
+        result = torch.zeros((len(groups), 2 * len(audio)), device=device)
+        steps = len(ensemble) * repeats
+        done = 0
+        for model, matrix in ensemble:
+            for _ in range(repeats):
+                _check_cancel(cancelled)
+                stems = apply_model(model, mix[None], shifts=int(options.shifts > 0),
+                                    split=False, device=device)[0]
+                result.addmm_(matrix, stems.flatten(1))
+                done += 1
+                report((start + flush * done / steps) / source.frames)
+        shaped = result.view(len(groups), 2, len(audio))
+        return shaped.mul_(std / repeats).add_(dc).cpu().numpy()
+
+    _overlap_add(source, writers, window, options.overlap, predict, cancelled)
+
+
 def separate(input_pcm: Path, work_dir: Path, options, progress: Progress,
              cancelled: Cancellation) -> dict[str, Path]:
     """Separate stereo 44.1 kHz PCM. Progress is fractional and paths are temporary."""
     _check_cancel(cancelled)
     import soundfile as sf
     import torch
-    from demucs.apply import apply_model
 
     sources, groups = _stem_groups(options)
     if not 0 <= options.shifts <= 10 or not 0 <= options.overlap <= 0.99:
@@ -230,31 +370,8 @@ def separate(input_pcm: Path, work_dir: Path, options, progress: Progress,
             raise ValueError(msg("44.1 kHz 스테레오 PCM 입력이 필요합니다."))
         ensemble = _load_ensemble(options, sources, groups, device, progress, cancelled)
         mean, std = _normalization(source, progress, cancelled)
-        seconds = min(8.0, *(float(model.segment) for model, _ in ensemble))
-        # The Demucs shift trick adds up to half a second before the forward pass.
-        window = int(SAMPLE_RATE * seconds) - (SAMPLE_RATE // 2 if options.shifts else 0)
-        repeats = max(1, options.shifts)
-        dc = torch.tensor([len(group) * mean for group in groups.values()],
-                          dtype=torch.float32, device=device).reshape(-1, 1, 1)
-
-        @torch.inference_mode()
-        def predict(audio, start, flush):
-            mix = torch.from_numpy(audio.T.copy()).to(device)
-            mix.sub_(mean).div_(std)
-            result = torch.zeros((len(groups), 2 * len(audio)), device=device)
-            steps = len(ensemble) * repeats
-            done = 0
-            for model, matrix in ensemble:
-                for _ in range(repeats):
-                    _check_cancel(cancelled)
-                    stems = apply_model(model, mix[None], shifts=int(options.shifts > 0),
-                                        split=False, device=device)[0]
-                    result.addmm_(matrix, stems.flatten(1))
-                    done += 1
-                    completed = (start + flush * done / steps) / source.frames
-                    progress(0.08 + 0.92 * completed, msg("{device} · 스템 분리 중", device=label))
-            shaped = result.view(len(groups), 2, len(audio))
-            return shaped.mul_(std / repeats).add_(dc).cpu().numpy()
+        def report(done):
+            progress(0.08 + 0.92 * done, msg("{device} · 스템 분리 중", device=label))
 
         work_dir.mkdir(parents=True, exist_ok=True)
         folder = Path(tempfile.mkdtemp(prefix="stems-", dir=work_dir))
@@ -262,10 +379,11 @@ def separate(input_pcm: Path, work_dir: Path, options, progress: Progress,
         fmt = "RF64" if source.frames * 8 + 4096 >= 2**32 else "WAV"
         try:
             with ExitStack() as stack:
-                writers = [stack.enter_context(sf.SoundFile(path, "w", SAMPLE_RATE, 2,
+                writers = [stack.enter_context(sf.SoundFile(path, "w+", SAMPLE_RATE, 2,
                                                             subtype="FLOAT", format=fmt))
                            for path in paths.values()]
-                _overlap_add(source, writers, window, options.overlap, predict, cancelled)
+                run = _separate_mdx if options.model == "mdx_extra" else _separate_ht
+                run(source, writers, ensemble, groups, options, mean, std, device, report, cancelled)
                 _check_cancel(cancelled)
                 if any(writer.tell() != source.frames for writer in writers):
                     raise RuntimeError(msg("완성된 스템의 샘플 수가 입력과 다릅니다."))

@@ -28,6 +28,15 @@ def test_localized_validation_and_model_errors_preserve_user_data(english):
         media._check_cancel(lambda: True)
 
 
+@pytest.mark.parametrize(("field", "bad_value"), [
+    ("separation_strength", -1), ("separation_strength", 101), ("separation_strength", True),
+    ("bleed_reduction_db", 25), ("bleed_reduction_db", -1), ("bleed_reduction_db", 8.5),
+])
+def test_invalid_export_strength_settings_are_rejected(english, field, bad_value):
+    with pytest.raises(ValueError, match="Set (separation strength|bleed reduction)"):
+        Options(**{field: bad_value}).validate()
+
+
 def test_rerender_progress_and_diagnostics_in_both_languages(english):
     label = "GPU · 장치 이름"
     status = msg("{device} · 모델 준비 중", device=label)

@@ -15,21 +15,37 @@ Separate vocals and instruments from video or audio on Windows. Save the stems a
 1. Windows x64용 설치 파일을 실행하고 시작 메뉴에서 **Demucs Studio**를 엽니다. 앱 상단에서 **한국어** 또는 **English**를 고르면 다음 실행에도 적용됩니다. [Windows 설치 파일](https://github.com/LiveTrack-X/Demucs-Studio/releases/latest/download/DemucsStudio-Setup-x64.exe) · [최신 릴리즈](https://github.com/LiveTrack-X/Demucs-Studio/releases/latest)
 2. 원본 파일을 창에 끌어놓거나 **파일 추가**를 누릅니다. 여러 개를 넣으면 순서대로 처리합니다.
 3. 모델과 스템 수를 고른 뒤 **저장할 스템**을 지정합니다. **영상** 또는 **음원**을 선택하고 형식과 음질을 고릅니다.
-4. **분리 시작**을 누릅니다. 완료한 항목을 선택하면 아래에서 원본과 분리 결과를 번갈아 들을 수 있습니다. **결과 폴더**로 저장 위치를 엽니다.
+4. **분리 시작**을 누릅니다. 작업 중에도 파일을 추가할 수 있고, 설정 변경은 다음 파일부터 적용됩니다.
+5. 완료한 항목을 선택하면 미리듣기에 **보컬**이 열립니다. 보컬을 저장하지 않았다면 첫 번째 저장 스템이 열립니다. 같은 위치의 소리를 비교하려면 미리듣기 목록에서 **원본**을 고릅니다. **결과 폴더**에서 저장한 파일을 열 수 있습니다.
 
 | 원하는 결과 | 설정 예시 |
 |---|---|
-| 원본 화면에 목소리만 남긴 영상 | 영상 → MP4 → 보컬 |
+| 원본 화면에 보컬을 남긴 영상 | 영상 → MP4 → 보컬 |
 | 보컬을 제거한 영상 | 영상 → MP4 또는 MKV → 반주 |
 | 보컬만 담은 음원 | **보컬만 추출** 프리셋 → 적용 → 분리 시작. 24-bit WAV 보컬 한 개를 저장합니다. |
 | 작은 용량의 반주 음원 | 음원 → MP3 → 192 kbps → 반주 |
 | 악기별 파일 | **악기별 분리** 프리셋. 4개 스템을 각각 저장합니다. 6스템에서는 기타와 피아노도 따로 고를 수 있습니다. |
 
+**보컬**은 음악에서 사람의 목소리를 추출합니다. 방송이나 영상에서는 진행자의 말소리와 배경곡 가수의 노랫소리가 한 파일에 함께 남을 수 있습니다.
+
+**표준**, **최고 품질**, **6스템 모델**은 Demucs v4의 구간 길이와 겹침 방식으로 분리합니다. 고급 설정에서 **Shifts**가 1 이상이면 모델이 입력을 무작위로 조금 이동하므로 같은 설정으로 다시 실행해도 짧은 구간의 잔여음이 달라질 수 있습니다. 동일 입력을 반복 비교할 때는 **Shifts 0**으로 이 이동을 끌 수 있습니다.
+
 기본 저장 위치는 원본 옆의 `separated\원본명\`입니다. 예를 들어 `공연.mp4`의 보컬 영상은 `공연_vocals.mp4`로 저장됩니다. 같은 이름의 결과가 있으면 새 번호 폴더를 만듭니다. 기존 파일을 다른 형식으로 다시 뽑으려면 대기열에서 해당 항목을 선택하고 **다시 대기**를 누릅니다.
+
+### 분리 강도와 잔여음
+
+기본값은 **최고 품질 · 분리 강도 100% · 잔여음 억제 6 dB**입니다. 처음에는 파일을 추가하고 원하는 스템과 출력 형식만 고르면 됩니다.
+
+| 고급 설정 | 출력에 미치는 영향 |
+|---|---|
+| **분리 강도** (0~100%) | 100%는 선택한 스템만 저장합니다. 50%는 원본과 분리한 스템을 같은 비율로 섞습니다. 0%는 원본 믹스를 선택한 출력 형식으로 저장합니다. |
+| **잔여음 억제** (0~24 dB) | 다른 소리가 우세한 시간·주파수에서 스템에 남은 소리를 설정한 값까지 줄입니다. 크게 설정하면 약한 목소리나 악기의 여운도 줄어들 수 있습니다. 0 dB는 추가 억제를 끕니다. |
+
+예를 들어 보컬 뒤에 반주를 조금 남기려면 **보컬 · 분리 강도 75%**를 사용합니다. Demucs가 계산한 스템을 그대로 내보내려면 **100% · 0 dB**를 사용합니다. 같은 조절이 음원과 영상 출력에 모두 적용됩니다.
 
 ### 내 프리셋과 업데이트
 
-모델, 스템, 포맷, 비트레이트 또는 비트 깊이, 장치, Shifts, Overlap, 저장 위치를 조정하고 **새로 저장**에서 이름을 입력합니다. 다음 실행에서도 **프리셋** 목록에서 선택해 **적용**할 수 있습니다. **⋯** 메뉴로 이름을 바꾸거나 삭제합니다.
+분리 강도, 잔여음 억제, 모델, 스템, 포맷, 음질, 장치, Shifts, Overlap, 저장 위치를 조정하고 **새로 저장**에서 이름을 입력합니다. 다음 실행에서도 **프리셋** 목록에서 선택해 **적용**할 수 있습니다. **⋯** 메뉴로 이름을 바꾸거나 삭제합니다.
 
 하단의 **버전 | Created by LiveTrack**을 누르면 이 저장소가 열립니다. 새 정식 버전이 있으면 주황색 **Update**가 표시됩니다. 분리 작업이 끝난 뒤 버튼을 누르면 릴리즈 설치 파일을 내려받아 SHA-256을 검증하고 업데이트를 적용합니다. 버전 표시를 오른쪽 클릭하면 직접 확인할 수 있습니다.
 
@@ -79,21 +95,37 @@ CUDA 라이브러리를 제외한 CPU 전용 빌드는 `.\build.ps1 -TorchBuild 
 1. Run the Windows x64 installer and open **Demucs Studio** from the Start menu. Choose **English** or **한국어** at the top of the window. The app remembers the language for the next session. [Download for Windows](https://github.com/LiveTrack-X/Demucs-Studio/releases/latest/download/DemucsStudio-Setup-x64.exe) · [Latest release](https://github.com/LiveTrack-X/Demucs-Studio/releases/latest)
 2. Drag video or audio files into the queue, or use the file picker. The app processes multiple files in order.
 3. Choose a model, a two-, four-, or six-stem configuration, and which stems to save. Select video or audio output, then choose the format and audio quality.
-4. Start separation. Select a finished item to listen to the original and the result or open its output folder.
+4. Start separation. You can add files while a job runs. Changes to the settings take effect when the next file starts.
+5. Select a finished item to preview **Vocals**, or the first saved stem if you did not export vocals. Choose **Original** in the preview menu to compare at the same playback position. Open the output folder to access the saved files.
 
 | To get | Choose |
 |---|---|
-| Original video with just the voice | Video → MP4 → vocals |
+| Original video with the vocal track | Video → MP4 → vocals |
 | Video with just the backing track | Video → MP4 or MKV → accompaniment |
 | A vocal recording | Apply the vocals-only preset. It writes one 24-bit WAV file. |
 | A compact instrumental track | Audio → MP3 → 192 kbps → accompaniment |
 | Separate instruments | Apply the instrument preset for four files. The six-stem model also separates guitar and piano. |
 
+**Vocals** extracts voices from music. For a broadcast or video with a song playing in the background, the exported track can contain both the presenter’s speech and the singer’s voice.
+
+**Standard**, **Best quality**, and the **6-stem model** use the Demucs v4 window length and overlap method. With **Shifts** set to 1 or higher, the model shifts the input by a small random offset, so bleed in a short passage can vary between runs. Set **Shifts** to **0** in Advanced settings to turn off the random shift when comparing repeated exports of the same input.
+
 Outputs go into `separated\<original name>\` beside the source by default. For example, the vocal video from `concert.mp4` is named `concert_vocals.mp4`. A repeat export creates a numbered folder. Requeue an item to export it again with different settings.
+
+### Separation strength and bleed reduction
+
+The defaults are **Best quality, 100% separation strength, and 6 dB bleed reduction**. For a first export, add a file and choose the stems and format you want.
+
+| Advanced setting | Effect on the saved file |
+|---|---|
+| **Separation strength** (0–100%) | At 100%, the file contains only the selected stem. At 50%, the original mix and the processed stem contribute equally. At 0%, the app exports the original mix in the selected format. |
+| **Bleed reduction** (0–24 dB) | Attenuates the stem by up to the chosen amount at times and frequencies where other sounds dominate. Higher settings can soften quiet words or instrument tails. Set it to 0 dB to turn off this extra processing. |
+
+For example, select **Vocals** and **75% strength** to leave some backing in a vocal recording. Use **100% and 0 dB** to export the direct Demucs prediction. Both controls apply to audio and video exports.
 
 ### Presets and updates
 
-Set the model, stems, format, quality, processing device, shifts, overlap, and output folder. Save the settings under a name in the preset controls. Select and apply your preset in a later session. Use the **⋯** menu to rename or delete it.
+Set the separation strength, bleed reduction, model, stems, format, quality, processing device, shifts, overlap, and output folder. Save the settings under a name in the preset controls. Select and apply your preset in a later session. Use the **⋯** menu to rename or delete it.
 
 Click the version and **Created by LiveTrack** credit to visit the project. An orange **Update** button appears when a newer stable Windows release is available. Once separation is idle, use the button to download the installer, verify its SHA-256 digest, and apply the update. Right-click the version credit to check manually.
 

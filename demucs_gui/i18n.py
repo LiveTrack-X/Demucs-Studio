@@ -20,6 +20,8 @@ def t(source, **fields):
 EN = {
     "전체 스템 (각각 저장)": "All stems (separate files)",
     "보컬": "Vocals", "반주": "Instrumental", "드럼": "Drums", "베이스": "Bass",
+    "보컬에는 말소리와 배경곡의 노랫소리가 함께 남을 수 있습니다.":
+        "Vocals can include both spoken dialogue and singing from background music.",
     "그 외 악기": "Other instruments", "기타": "Guitar", "피아노": "Piano",
     "표준": "Standard", "빠른 분리": "Fast separation",
     "최고 품질": "Best quality", "정밀한 분리": "Cleanest stems",
@@ -48,6 +50,12 @@ EN = {
     "저장 위치": "Save to", "원본 옆 separated 폴더": "A separated folder beside the source",
     "출력 폴더": "Output folder", "출력 폴더 선택": "Choose output folder",
     "고급 설정": "Advanced settings", "자동 (CUDA 우선)": "Auto (prefer CUDA)",
+    "분리 강도": "Separation strength", "잔여음 억제": "Bleed reduction",
+    "분리 강도 슬라이더": "Separation strength slider", "잔여음 억제 슬라이더": "Bleed reduction slider",
+    "0%는 원본, 100%는 선택한 스템입니다. 값을 낮추면 원본의 다른 소리가 더 많이 남습니다.":
+        "0% keeps the original mix. 100% isolates the selected stem. Lower values keep more of the other sounds.",
+    "0 dB에서 추가 억제를 끕니다. 다른 소리가 우세한 부분에서 스템 신호를 최대 24 dB까지 더 줄일 수 있습니다.":
+        "0 dB turns extra cleanup off. Use up to 24 dB to reduce the stem further where other sounds dominate.",
     "입력 위치를 바꿔 반복 계산합니다. 값이 크면 시간이 더 걸립니다.":
         "Run separation with shifted inputs. More shifts take longer.",
     "분리할 오디오 구간이 서로 겹치는 비율": "Fraction of overlap between audio segments",
@@ -82,9 +90,6 @@ EN = {
     "선택 파일 다시 대기": "Requeue selected files",
     "대기": "Queued", "실패": "Failed", "완료": "Completed", "처리 중": "Processing",
     "취소됨": "Cancelled", "시작 중": "Starting",
-    "분리 시작 · {count}개 · {model} · {format} · {quality}":
-        "Started · {count} file(s) · {model} · {format} · {quality}",
-    "{name} · 처리 시작": "{name} · Started",
     "계산 중": "Estimating",
     "전체 {progress}   ·   경과 {elapsed}   ·   예상 남은 시간 {remaining}":
         "Overall {progress}   ·   Elapsed {elapsed}   ·   Remaining {remaining}",
@@ -100,4 +105,8 @@ EN = {
     "CUDA GPU 사용 불가": "CUDA GPU unavailable", "분리 장치 · {device}": "Device · {device}",
     "보컬·악기 분리에 사용할 장치입니다. 고급 설정에서 변경할 수 있습니다.":
         "Device used to separate vocals and instruments. Change it in Advanced settings.",
+    "설정 변경은 다음 파일부터 적용됩니다.": "Settings changes apply to the next file.",
+    "분리 시작 · {count}개": "Started · {count} file(s)",
+    "{name} · 처리 시작 · {model} · {format} · {quality}":
+        "{name} · Started · {model} · {format} · {quality}",
 }

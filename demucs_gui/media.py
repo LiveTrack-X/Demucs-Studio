@@ -264,12 +264,32 @@ def _audio_args(fmt: str, quality: str, info: MediaInfo) -> list[str]:
     if fmt == "flac":
         return ["-ar", str(info.audio_rate), "-c:a", "flac", "-sample_fmt",
                 "s16" if quality == "16" else "s32", "-bits_per_raw_sample", quality, "-f", "flac"]
-    if fmt == "mp3":
-        return ["-c:a", "libmp3lame", "-b:a", f"{quality}k", "-f", "mp3"]
     if fmt == "aac":
         return ["-c:a", "aac", "-b:a", f"{quality}k", "-f", "adts"]
     return ["-c:a", "aac", "-b:a", f"{quality}k", "-movflags", "+faststart",
             "-movie_timescale", str(MODEL_RATE), "-f", "mp4"]
+
+
+def _export_mp3(stem: Path, dest: Path, duration: float, bitrate: str,
+                progress: Progress, cancelled: Cancelled) -> None:
+    import numpy as np
+    import soundfile as sf
+
+    # Match Demucs save_audio's peak protection and signed 16-bit input to LAME.
+    # Let FFmpeg write the delay/padding header so playback stays on the source timeline.
+    label = msg("오디오 레벨 분석 중")
+    peak = 0.0
+    with sf.SoundFile(stem) as audio:
+        for block in audio.blocks(blocksize=262144, dtype="float32"):
+            _check_cancel(cancelled)
+            peak = max(peak, float(np.abs(block).max()))
+            progress(0.1 * audio.tell() / audio.frames, label)
+    scale = 32767 / max(1.0, 1.01 * peak)
+    quantize = f"aeval=trunc(val(ch)*{scale:.15g})/32768:c=same"
+    _run([*_input(stem), "-map", "0:a:0", "-map_metadata", "-1", "-af", quantize,
+          "-c:a", "libmp3lame", "-sample_fmt", "s16p", "-compression_level", "2",
+          "-b:a", f"{bitrate}k", "-f", "mp3", str(dest)], duration,
+         msg("음원 저장 중"), lambda fraction, stage: progress(0.1 + 0.9 * fraction, stage), cancelled)
 
 
 def export(source: Path, stem: Path, dest: Path, info: MediaInfo, options: Options,
@@ -281,7 +301,9 @@ def export(source: Path, stem: Path, dest: Path, info: MediaInfo, options: Optio
     _check_cancel(cancelled)
     with _new_output(dest):
         if options.output_kind == "audio":
-            if fmt in ("wav", "flac") and info.audio_frames and info.audio_rate != MODEL_RATE:
+            if fmt == "mp3":
+                _export_mp3(stem, dest, info.duration, quality, progress, cancelled)
+            elif fmt in ("wav", "flac") and info.audio_frames and info.audio_rate != MODEL_RATE:
                 _native_lossless(stem, dest, info, fmt, quality, progress, cancelled)
             else:
                 _run([*_input(stem), "-map", "0:a:0", "-map_metadata", "-1",

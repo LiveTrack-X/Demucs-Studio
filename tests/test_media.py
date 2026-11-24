@@ -89,6 +89,24 @@ class MediaTests(unittest.TestCase):
         media.export(source, stem, dest, info, Options(), progress, running)
         self.assertEqual((sf.info(dest).frames, sf.info(dest).samplerate), (48000, 48000))
 
+    def test_mp3_uses_demucs_pcm_levels_and_retains_gapless_stereo(self):
+        rate = 44100
+        time = np.arange(rate * 4) / rate
+        stereo = np.column_stack([1.2 * np.sin(2 * np.pi * 441 * time),
+                                  0.3 * np.cos(2 * np.pi * 735 * time)]).astype("float32")
+        stereo[rate:3 * rate] = [0.000025, -0.000025]
+        stem = self.dir / "floating.wav"
+        sf.write(stem, stereo, rate, subtype="FLOAT")
+        dest = self.dir / "result.mp3"
+        media.export(stem, stem, dest, media.probe(stem), Options(audio_format="mp3", quality="320"),
+                     progress, running)
+        samples, output_rate = sf.read(dest, dtype="float32")
+        self.assertEqual((samples.shape, output_rate), (stereo.shape, rate))
+        self.assertEqual(np.abs(samples[rate + 5000:3 * rate - 5000]).max(), 0)
+        steady = slice(rate // 4, rate // 2)
+        expected = stereo[steady] / (1.01 * np.abs(stereo).max())
+        np.testing.assert_allclose(samples[steady], expected, atol=0.01)
+
     def test_packet_gap_at_recording_join_keeps_original_timeline(self):
         # A dropped AAC packet leaves 21.3 ms of presentation time at 48 kHz.
         source = self.dir / "recording.m4a"

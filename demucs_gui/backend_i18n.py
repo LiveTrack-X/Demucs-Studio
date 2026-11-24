@@ -17,6 +17,9 @@ ENGLISH = {
     "모델 확인 중": "Checking model",
     "모델의 스템 구성 또는 오디오 규격이 예상과 다릅니다.": "The model returned an unexpected stem layout or audio format.",
     "오디오 레벨 분석 중": "Analyzing audio levels",
+    "분리 강도와 잔여음 억제 적용 중": "Applying separation strength and bleed reduction",
+    "분리 음원과 원본의 샘플 형식 또는 길이가 일치하지 않습니다.":
+        "The stem and original have different sample formats or lengths.",
     "입력 오디오에 유효하지 않은 샘플이 있습니다.": "The input audio contains invalid samples.",
     "디코딩된 오디오의 샘플 수가 헤더와 다릅니다.": "The decoded sample count does not match the audio header.",
     "모델 출력의 샘플 수 또는 값이 올바르지 않습니다.": "The model returned an invalid sample count or sample value.",
@@ -54,6 +57,10 @@ ENGLISH = {
     "보컬만 저장할 때는 보컬 스템을 선택해 주세요.": "Select the vocals stem when exporting vocals only.",
     "연산 장치를 다시 선택해 주세요.": "Choose a supported processing device.",
     "Shifts 또는 Overlap 값이 범위를 벗어났습니다.": "Shifts or overlap is out of range.",
+    "분리 강도는 0~100% 사이의 정수로 설정해 주세요.":
+        "Set separation strength to a whole percentage from 0 to 100.",
+    "잔여음 억제는 0~24 dB 사이의 정수로 설정해 주세요.":
+        "Set bleed reduction to a whole number from 0 to 24 dB.",
     "내보낼 파일 유형을 선택해 주세요.": "Choose an export file type.",
     "지원하지 않는 파일 형식입니다.": "Unsupported file format.",
     "현재 형식에 맞는 음질을 선택해 주세요.": "Choose a quality supported by the selected format.",
