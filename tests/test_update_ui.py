@@ -94,11 +94,13 @@ def test_update_button_requires_newer_compatible_github_release(application, mon
     replies = []
     monkeypatch.setattr(updater, "_request", lambda *_: io.BytesIO(json.dumps(replies.pop()).encode()))
     footer = UpdateFooter(lambda: False)
+    major, minor, patch = map(int, updater.VERSION.split("."))
+    next_tag = f"v{major}.{minor}.{patch + 1}"
     for tag, prerelease, name, expected in [
-        ("v1.0.0", False, "DemucsStudio-Setup-x64.exe", False),
-        ("v1.1.0", True, "DemucsStudio-Setup-x64.exe", False),
-        ("v1.1.0", False, "Linux.tar.gz", False),
-        ("v1.1.0", False, "DemucsStudio-Setup-x64.exe", True),
+        (f"v{updater.VERSION}", False, "DemucsStudio-Setup-x64.exe", False),
+        (next_tag, True, "DemucsStudio-Setup-x64.exe", False),
+        (next_tag, False, "Linux.tar.gz", False),
+        (next_tag, False, "DemucsStudio-Setup-x64.exe", True),
     ]:
         replies.append({"tag_name": tag, "prerelease": prerelease, "assets": [{
             "name": name, "size": 32, "state": "uploaded", "digest": "sha256:" + "5" * 64,
@@ -107,6 +109,29 @@ def test_update_button_requires_newer_compatible_github_release(application, mon
         discover(footer, application)
         assert (not footer.update_button.isHidden()) == expected
     footer.close()
+
+
+def test_switching_footer_language_preserves_release_and_credit(application, monkeypatch):
+    from demucs_gui.i18n import language, set_language
+
+    before = language()
+    try:
+        set_language("ko")
+        footer = UpdateFooter(lambda: True, backend=FakeUpdater())
+        discover(footer, application)
+        assert footer.manual_check.text() == "업데이트 확인"
+        set_language("en")
+        footer.retranslate()
+        assert footer.credit.text() == "v1.0.0 | Created by LiveTrack"
+        assert footer.manual_check.text() == "Check for updates"
+        assert footer.update_button.toolTip() == "Update to v1.1.0"
+        messages = []
+        monkeypatch.setattr(QMessageBox, "information", lambda *args: messages.append(args[1:3]))
+        footer.update_button.click()
+        assert messages == [("Update", "Finish the current separation before updating.")]
+        footer.close()
+    finally:
+        set_language(before)
 
 
 def test_packaged_install_requires_approval_and_idle_queue(application, monkeypatch):

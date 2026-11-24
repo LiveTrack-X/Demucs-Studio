@@ -12,6 +12,8 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from .backend_i18n import msg
+from .i18n import language
 from .version import REPO_URL, VERSION
 
 
@@ -76,14 +78,14 @@ def check_update(current_version=VERSION):
         if (item.get("state") != "uploaded" or item.get("browser_download_url") != expected_url
                 or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest)
                 or not isinstance(item["size"], int) or item["size"] <= 0):
-            raise ValueError("GitHub에서 업데이트 파일의 크기 또는 SHA-256을 확인할 수 없습니다.")
+            raise ValueError(msg("GitHub에서 업데이트 파일의 크기 또는 SHA-256을 확인할 수 없습니다."))
         if part:
             parts.append(int(part[1]))
         assets.append(Asset(name, item["size"], digest[7:].lower(), expected_url))
     if not assets:
         return None
     if sum(a.name == exe for a in assets) != 1 or sorted(parts) != list(range(1, len(parts) + 1)):
-        raise ValueError("릴리즈 설치 파일 구성이 올바르지 않습니다.")
+        raise ValueError(msg("릴리즈 설치 파일 구성이 올바르지 않습니다."))
     return Release(tag.removeprefix("v"), f"{REPO_URL}/releases/tag/{tag}", tuple(assets))
 
 
@@ -130,25 +132,25 @@ def download_install(release, progress, cancelled):
     try:
         for asset in release.assets:
             if cancelled():
-                raise InterruptedError("업데이트 다운로드를 취소했습니다.")
+                raise InterruptedError(msg("업데이트 다운로드를 취소했습니다."))
             digest = hashlib.sha256()
             size = 0
             dest = folder / asset.name
             with _request(asset.url, "application/octet-stream") as response, dest.open("xb") as out:
                 while data := response.read(1024 * 1024):
                     if cancelled():
-                        raise InterruptedError("업데이트 다운로드를 취소했습니다.")
+                        raise InterruptedError(msg("업데이트 다운로드를 취소했습니다."))
                     size += len(data)
                     if size > asset.size:
-                        raise ValueError("업데이트 파일이 공개된 크기보다 큽니다.")
+                        raise ValueError(msg("업데이트 파일이 공개된 크기보다 큽니다."))
                     out.write(data)
                     digest.update(data)
                     downloaded += len(data)
                     progress(downloaded / total, f"{downloaded / 2**20:.0f} / {total / 2**20:.0f} MB")
             if size != asset.size or digest.hexdigest() != asset.sha256:
-                raise ValueError("업데이트 파일의 SHA-256 또는 크기가 일치하지 않습니다. 다시 시도해 주세요.")
+                raise ValueError(msg("업데이트 파일의 SHA-256 또는 크기가 일치하지 않습니다. 다시 시도해 주세요."))
         if cancelled():
-            raise InterruptedError("업데이트 다운로드를 취소했습니다.")
+            raise InterruptedError(msg("업데이트 다운로드를 취소했습니다."))
         return folder / (SETUP + ".exe")
     except BaseException:
         _discard(folder)
@@ -157,13 +159,14 @@ def download_install(release, progress, cancelled):
 
 def launch_installer(path: Path):
     if not getattr(sys, "frozen", False) or sys.platform != "win32":
-        raise RuntimeError("설치된 Windows 앱에서 업데이트를 적용할 수 있습니다.")
+        raise RuntimeError(msg("설치된 Windows 앱에서 업데이트를 적용할 수 있습니다."))
     import ctypes
     install_dir = Path(sys.executable).resolve().parent
+    setup_language = "english" if language() == "en" else "korean"
     # A child inherits PyInstaller's DLL search path. Give Windows Setup its normal environment.
     ctypes.windll.kernel32.SetDllDirectoryW(None)
     try:
         subprocess.Popen([str(path), "/SP-", "/SILENT", "/NORESTART", "/RELAUNCH=1",
-                          f"/DIR={install_dir}"], cwd=path.parent, close_fds=True)
+                          f"/DIR={install_dir}", f"/LANG={setup_language}"], cwd=path.parent, close_fds=True)
     finally:
         ctypes.windll.kernel32.SetDllDirectoryW(str(sys._MEIPASS))

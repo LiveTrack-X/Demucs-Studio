@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.request import urlopen
 
+from .backend_i18n import msg
+
 
 Progress = Callable[[float, str], None]
 Cancellation = Callable[[], bool]
@@ -20,12 +22,12 @@ SUPPORTED_MODELS = {"htdemucs", "htdemucs_ft", "htdemucs_6s", "mdx_extra"}
 
 def _check_cancel(cancelled: Cancellation) -> None:
     if cancelled():
-        raise InterruptedError("분리를 취소했습니다.")
+        raise InterruptedError(msg("분리를 취소했습니다."))
 
 
 def _stem_groups(options):
     if options.model not in SUPPORTED_MODELS:
-        raise ValueError(f"지원하지 않는 모델입니다. {options.model}")
+        raise ValueError(msg("지원하지 않는 모델입니다. {model}", model=options.model))
     sources = FOUR_SOURCES
     if options.model == "htdemucs_6s":
         sources += ("guitar", "piano")
@@ -39,11 +41,11 @@ def _stem_groups(options):
     elif mode == "6" and len(sources) == 6:
         groups = {s: (s,) for s in sources}
     else:
-        raise ValueError("선택한 모델과 스템 수의 조합을 지원하지 않습니다.")
+        raise ValueError(msg("선택한 모델과 스템 수의 조합을 지원하지 않습니다."))
     selected = "vocals" if options.vocals_only else options.selected_stem
     if selected != "all":
         if selected not in groups:
-            raise ValueError(f"현재 설정에서 저장할 수 없는 스템입니다. {selected}")
+            raise ValueError(msg("현재 설정에서 저장할 수 없는 스템입니다. {stem}", stem=selected))
         groups = {selected: groups[selected]}
     return sources, groups
 
@@ -71,7 +73,7 @@ def _checkpoint(url: str, cache: Path, notify, cancelled: Cancellation) -> Path:
     digest = hashlib.sha256()
     temporary = None
     try:
-        notify(0.0, "모델 다운로드 연결 중")
+        notify(0.0, msg("모델 다운로드 연결 중"))
         with urlopen(url, timeout=20) as response:
             length = int(response.headers.get("Content-Length") or 0)
             with tempfile.NamedTemporaryFile(dir=cache, suffix=".part", delete=False) as stream:
@@ -86,9 +88,9 @@ def _checkpoint(url: str, cache: Path, notify, cancelled: Cancellation) -> Path:
                     amount = f"{received / 2**20:.0f} MB"
                     if length:
                         amount = f"{fraction:.0%} · {amount}"
-                    notify(fraction, f"모델 다운로드 {amount}")
+                    notify(fraction, msg("모델 다운로드 {amount}", amount=amount))
         if not digest.hexdigest().startswith(expected):
-            raise RuntimeError(f"다운로드한 모델의 체크섬이 일치하지 않습니다. {filename}")
+            raise RuntimeError(msg("다운로드한 모델의 체크섬이 일치하지 않습니다. {filename}", filename=filename))
         _check_cancel(cancelled)
         try:
             temporary.replace(destination)
@@ -126,13 +128,13 @@ def _load_ensemble(options, sources, groups, device, progress, cancelled):
             ratio = (index + fraction) / len(needed)
             progress(0.04 * ratio, f"{message} ({index + 1}/{len(needed)})")
 
-        notify(0, "모델 확인 중")
+        notify(0, msg("모델 확인 중"))
         path = _checkpoint(urls[sig], cache, notify, cancelled)
         # Official Demucs checkpoints contain the model class and constructor arguments.
         model = load_model(torch.load(path, map_location="cpu", weights_only=False)).eval()
         if (set(model.sources) != set(sources) or model.samplerate != SAMPLE_RATE
                 or model.audio_channels != 2):
-            raise RuntimeError("모델의 스템 구성 또는 오디오 규격이 예상과 다릅니다.")
+            raise RuntimeError(msg("모델의 스템 구성 또는 오디오 규격이 예상과 다릅니다."))
         mix = []
         for group in groups.values():
             mix.append([row[i] / totals[i] if s in group else 0.0
@@ -151,13 +153,13 @@ def _normalization(source, progress, cancelled):
         mono = block.mean(axis=1, dtype=np.float64)
         total += mono.sum()
         squared += np.square(mono).sum()
-        progress(0.04 + 0.04 * source.tell() / source.frames, "오디오 레벨 분석 중")
+        progress(0.04 + 0.04 * source.tell() / source.frames, msg("오디오 레벨 분석 중"))
     count = source.frames
     mean = total / count
     variance = max(0.0, (squared - total * mean) / max(1, count - 1))
     deviation = variance ** 0.5
     if not np.isfinite(mean) or not np.isfinite(deviation):
-        raise ValueError("입력 오디오에 유효하지 않은 샘플이 있습니다.")
+        raise ValueError(msg("입력 오디오에 유효하지 않은 샘플이 있습니다."))
     return mean, deviation if deviation > 1e-8 else 1.0
 
 
@@ -179,14 +181,14 @@ def _overlap_add(source, writers, window, overlap, predict, cancelled):
         source.seek(start)
         audio = source.read(window, dtype="float32", always_2d=True)
         if audio.shape != (window, 2):
-            raise RuntimeError("디코딩된 오디오의 샘플 수가 헤더와 다릅니다.")
+            raise RuntimeError(msg("디코딩된 오디오의 샘플 수가 헤더와 다릅니다."))
         end = start + window
         finished = end == length
         # Anchor the final full window to EOF to preserve context at the tail.
         flush = window if finished else min(hop, length - end)
         estimates = predict(audio, start, flush)
         if estimates.shape != accumulated.shape or not np.isfinite(estimates).all():
-            raise RuntimeError("모델 출력의 샘플 수 또는 값이 올바르지 않습니다.")
+            raise RuntimeError(msg("모델 출력의 샘플 수 또는 값이 올바르지 않습니다."))
         accumulated += estimates * weights
         normalizer += weights
         for writer, stem in zip(writers, accumulated):
@@ -211,21 +213,21 @@ def separate(input_pcm: Path, work_dir: Path, options, progress: Progress,
 
     sources, groups = _stem_groups(options)
     if not 0 <= options.shifts <= 10 or not 0 <= options.overlap <= 0.99:
-        raise ValueError("Shifts 또는 Overlap이 지원 범위를 벗어났습니다.")
+        raise ValueError(msg("Shifts 또는 Overlap이 지원 범위를 벗어났습니다."))
     device = options.device
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA GPU를 사용할 수 없습니다. 자동 또는 CPU를 선택해 주세요.")
+        raise RuntimeError(msg("CUDA GPU를 사용할 수 없습니다. 자동 또는 CPU를 선택해 주세요."))
     if device not in {"cuda", "cpu"}:
-        raise ValueError(f"지원하지 않는 장치입니다. {device}")
+        raise ValueError(msg("지원하지 않는 장치입니다. {device}", device=device))
     if device == "cpu":
         torch.set_num_threads(min(8, max(1, (os.cpu_count() or 2) // 2)))
     label = f"GPU · {torch.cuda.get_device_name()}" if device == "cuda" else "CPU"
-    progress(0.0, f"{label} · 모델 준비 중")
+    progress(0.0, msg("{device} · 모델 준비 중", device=label))
     with sf.SoundFile(input_pcm) as source:
         if source.frames <= 0 or source.channels != 2 or source.samplerate != SAMPLE_RATE:
-            raise ValueError("44.1 kHz 스테레오 PCM 입력이 필요합니다.")
+            raise ValueError(msg("44.1 kHz 스테레오 PCM 입력이 필요합니다."))
         ensemble = _load_ensemble(options, sources, groups, device, progress, cancelled)
         mean, std = _normalization(source, progress, cancelled)
         seconds = min(8.0, *(float(model.segment) for model, _ in ensemble))
@@ -250,7 +252,7 @@ def separate(input_pcm: Path, work_dir: Path, options, progress: Progress,
                     result.addmm_(matrix, stems.flatten(1))
                     done += 1
                     completed = (start + flush * done / steps) / source.frames
-                    progress(0.08 + 0.92 * completed, f"{label} · 스템 분리 중")
+                    progress(0.08 + 0.92 * completed, msg("{device} · 스템 분리 중", device=label))
             shaped = result.view(len(groups), 2, len(audio))
             return shaped.mul_(std / repeats).add_(dc).cpu().numpy()
 
@@ -266,7 +268,7 @@ def separate(input_pcm: Path, work_dir: Path, options, progress: Progress,
                 _overlap_add(source, writers, window, options.overlap, predict, cancelled)
                 _check_cancel(cancelled)
                 if any(writer.tell() != source.frames for writer in writers):
-                    raise RuntimeError("완성된 스템의 샘플 수가 입력과 다릅니다.")
+                    raise RuntimeError(msg("완성된 스템의 샘플 수가 입력과 다릅니다."))
         except BaseException:
             for path in paths.values():
                 path.unlink(missing_ok=True)

@@ -1,4 +1,4 @@
-"""Korean desktop workspace for local Demucs jobs."""
+"""Desktop workspace for local Demucs jobs."""
 
 from __future__ import annotations
 
@@ -6,13 +6,14 @@ import json
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QObject, QPointF, QRunnable, QSettings, QSize, Qt, QThread, QThreadPool,
-    QTimer, QUrl, Signal,
+    QLibraryInfo, QLocale, QObject, QPointF, QRunnable, QSettings, QSize, Qt, QThread,
+    QThreadPool, QTimer, QTranslator, QUrl, Signal,
 )
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -25,7 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 from .config import Options, QUALITY_OPTIONS, STEMS as MODE_STEMS
+from .backend_i18n import translate_backend
+from .i18n import EN, language, set_language, t
 from .theme import STYLE, glyph
+from .device_status import DeviceStatus
 from .update_ui import UpdateFooter
 
 
@@ -43,20 +47,39 @@ STEMS = {
 }
 
 
+def bind(widget, setter, source, **fields):
+    """Remember source copy separately from any user-provided format arguments."""
+    if not hasattr(widget, "_copy"):
+        widget._copy = {}
+    widget._copy[setter] = source, fields
+    getattr(widget, setter)(t(source, **fields))
+
+
 def label(text, name=""):
-    widget = QLabel(text)
+    widget = QLabel()
     widget.setTextFormat(Qt.TextFormat.PlainText)
     widget.setObjectName(name)
+    if text in EN:
+        bind(widget, "setText", text)
+    else:
+        widget.setText(text)
     return widget
 
 
 def button(text, name="", icon=None):
-    widget = QPushButton(text)
+    widget = QPushButton()
+    bind(widget, "setText", text)
     widget.setObjectName(name)
     if icon:
         widget.setIcon(glyph(icon))
         widget.setIconSize(QSize(16, 16))
     return widget
+
+
+def local_action(menu, source, callback):
+    action = menu.addAction(t(source), callback)
+    bind(action, "setText", source)
+    return action
 
 
 def heading(text):
@@ -71,6 +94,18 @@ def divider():
 
 
 class ComboBox(QComboBox):
+    caption_role = Qt.ItemDataRole.UserRole + 1
+
+    def add_caption(self, source, data, **fields):
+        self.addItem(t(source, **fields), data)
+        self.setItemData(self.count() - 1, (source, fields), self.caption_role)
+
+    def retranslate(self):
+        for index in range(self.count()):
+            caption = self.itemData(index, self.caption_role)
+            if caption:
+                self.setItemText(index, t(caption[0], **caption[1]))
+
     def paintEvent(self, event):
         super().paintEvent(event)
         paint = QPainter(self)
@@ -87,7 +122,7 @@ def combo(entries=()):
     box.setMinimumContentsLength(4)
     box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     for value, title in entries:
-        box.addItem(title, value)
+        box.add_caption(title, value)
     return box
 
 
@@ -107,7 +142,7 @@ def time_text(seconds):
 def disclosure(title, content):
     switch = QToolButton()
     switch.setObjectName("disclosure")
-    switch.setText(title)
+    bind(switch, "setText", title)
     switch.setCheckable(True)
     switch.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
     switch.setArrowType(Qt.ArrowType.RightArrow)
@@ -148,9 +183,9 @@ class ChoiceCards(QWidget):
                 card.setObjectName("choiceCard")
                 card.setProperty("compact", self.compact)
                 card.setCheckable(True)
-                card.setAccessibleName(title)
-                card.setAccessibleDescription(detail)
-                card.setToolTip(f"{title} · {detail}" if detail else title)
+                bind(card, "setAccessibleName", title)
+                bind(card, "setAccessibleDescription", detail)
+                card.setToolTip(f"{t(title)} · {t(detail)}" if detail else t(title))
                 card.setMinimumHeight(30 if self.compact else 51)
                 card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 info = QVBoxLayout(card)
@@ -257,18 +292,18 @@ class SettingsPanel(QFrame):
         preset_row = QHBoxLayout()
         preset_row.setSpacing(5)
         self.presets = combo()
-        self.presets.setAccessibleName("프리셋 선택")
+        bind(self.presets, "setAccessibleName", "프리셋 선택")
         self.apply_button = button("적용")
         self.save_button = button("새로 저장")
         self.manage_button = QToolButton()
         self.manage_button.setText("⋯")
         self.manage_button.setObjectName("presetManage")
-        self.manage_button.setAccessibleName("사용자 프리셋 관리")
-        self.manage_button.setToolTip("사용자 프리셋 이름 변경 또는 삭제")
+        bind(self.manage_button, "setAccessibleName", "사용자 프리셋 관리")
+        bind(self.manage_button, "setToolTip", "사용자 프리셋 이름 변경 또는 삭제")
         self.manage_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.manage_button)
-        menu.addAction("이름 변경", self.rename_preset_dialog)
-        menu.addAction("삭제", self.delete_preset_dialog)
+        local_action(menu, "이름 변경", self.rename_preset_dialog)
+        local_action(menu, "삭제", self.delete_preset_dialog)
         self.manage_button.setMenu(menu)
         preset_row.addWidget(label("프리셋", "groupTitle"))
         preset_row.addWidget(self.presets, 1)
@@ -291,13 +326,13 @@ class SettingsPanel(QFrame):
         layout.addWidget(label("분리할 스템", "groupTitle"))
         self.mode = ChoiceCards(118)
         self.mode.populate(MODE_CARDS, "2")
-        self.mode.buttons["6"].setToolTip("6스템을 선택하면 6스템 모델로 전환합니다.")
+        bind(self.mode.buttons["6"], "setToolTip", "6스템을 선택하면 6스템 모델로 전환합니다.")
         self.mode.changed.connect(self.mode_chosen)
         layout.addWidget(self.mode)
         stems = QHBoxLayout()
         stems.addWidget(label("저장할 스템"))
         self.stem = combo()
-        self.stem.setAccessibleName("저장할 스템")
+        bind(self.stem, "setAccessibleName", "저장할 스템")
         stems.addWidget(self.stem, 1)
         layout.addLayout(stems)
         layout.addWidget(divider())
@@ -331,12 +366,12 @@ class SettingsPanel(QFrame):
         folder_row = QHBoxLayout()
         folder_row.addWidget(label("저장 위치", "groupTitle"))
         self.folder = QLineEdit()
-        self.folder.setPlaceholderText("원본 옆 separated 폴더")
+        bind(self.folder, "setPlaceholderText", "원본 옆 separated 폴더")
         self.folder.setClearButtonEnabled(True)
-        self.folder.setAccessibleName("출력 폴더")
+        bind(self.folder, "setAccessibleName", "출력 폴더")
         browse = button("", icon="folder")
-        browse.setAccessibleName("출력 폴더 선택")
-        browse.setToolTip("출력 폴더 선택")
+        bind(browse, "setAccessibleName", "출력 폴더 선택")
+        bind(browse, "setToolTip", "출력 폴더 선택")
         folder_row.addWidget(self.folder, 1)
         folder_row.addWidget(browse)
         layout.addLayout(folder_row)
@@ -348,14 +383,15 @@ class SettingsPanel(QFrame):
         details.setVerticalSpacing(6)
         self.model_name = label("")
         self.device = combo([("auto", "자동 (CUDA 우선)"), ("cuda", "GPU (CUDA)"), ("cpu", "CPU")])
+        bind(self.device, "setAccessibleName", "분리 장치 선택")
         self.shifts = QSpinBox()
         self.shifts.setRange(0, 10)
-        self.shifts.setToolTip("입력 위치를 바꿔 반복 계산합니다. 값이 크면 시간이 더 걸립니다.")
+        bind(self.shifts, "setToolTip", "입력 위치를 바꿔 반복 계산합니다. 값이 크면 시간이 더 걸립니다.")
         self.overlap = QDoubleSpinBox()
         self.overlap.setRange(0, 0.99)
         self.overlap.setDecimals(2)
         self.overlap.setSingleStep(0.05)
-        self.overlap.setToolTip("분리할 오디오 구간이 서로 겹치는 비율")
+        bind(self.overlap, "setToolTip", "분리할 오디오 구간이 서로 겹치는 비율")
         for i, (title, widget) in enumerate([("모델 이름", self.model_name), ("장치", self.device),
                                              ("Shifts", self.shifts), ("Overlap", self.overlap)]):
             details.addWidget(label(title), i, 0)
@@ -381,7 +417,7 @@ class SettingsPanel(QFrame):
     def update_format(self, fmt):
         self.formats[self.kind] = fmt
         lossless = fmt in ("wav", "flac")
-        self.quality_label.setText("비트 깊이" if lossless else "오디오 비트레이트")
+        bind(self.quality_label, "setText", "비트 깊이" if lossless else "오디오 비트레이트")
         entries = QUALITY_OPTIONS[fmt]
         quality = self.qualities.get(fmt, "24" if lossless else "320")
         if quality not in dict(entries):
@@ -410,14 +446,15 @@ class SettingsPanel(QFrame):
         self.stem.blockSignals(True)
         self.stem.clear()
         for key in ["all", *MODE_STEMS[self.mode.value()]]:
-            self.stem.addItem(STEMS[key], key)
+            self.stem.add_caption(STEMS[key], key)
         select(self.stem, previous)
         self.stem.blockSignals(False)
         self.model_name.setText(self.model.value())
         self.save()
 
     def browse_output(self):
-        path = QFileDialog.getExistingDirectory(self, "출력 폴더 선택", self.folder.text())
+        path = QFileDialog.getExistingDirectory(self, t("출력 폴더 선택"), self.folder.text(),
+                                                QFileDialog.Option.DontUseNativeDialog | QFileDialog.Option.ShowDirsOnly)
         if path:
             self.folder.setText(path)
 
@@ -473,11 +510,11 @@ class SettingsPanel(QFrame):
     def refresh_presets(self, selected=None):
         self.presets.blockSignals(True)
         self.presets.clear()
-        self.presets.addItem("프리셋 선택", "")
+        self.presets.add_caption("프리셋 선택", "")
         for key, (title, *_) in BUILTIN_PRESETS.items():
-            self.presets.addItem(title, "builtin/" + key)
+            self.presets.add_caption(title, "builtin/" + key)
         for name in sorted(self.custom_presets(), key=str.casefold):
-            self.presets.addItem("내 프리셋 · " + name, "user/" + name)
+            self.presets.add_caption("내 프리셋 · {name}", "user/" + name, name=name)
         select(self.presets, selected)
         self.presets.blockSignals(False)
         self.preset_controls()
@@ -504,7 +541,7 @@ class SettingsPanel(QFrame):
                 data = self.custom_presets()[name]
                 self.apply_settings(Options(**data["options"]), data["qualities"])
             except (TypeError, ValueError, KeyError):
-                QMessageBox.warning(self, "프리셋", "저장된 프리셋을 불러올 수 없습니다.")
+                QMessageBox.warning(self, t("프리셋"), t("저장된 프리셋을 불러올 수 없습니다."))
                 self.refresh_presets()
 
     def write_presets(self, presets, name=None):
@@ -514,22 +551,22 @@ class SettingsPanel(QFrame):
 
     def confirm(self, title, message, action):
         dialog = QMessageBox(self)
-        dialog.setWindowTitle(title)
+        dialog.setWindowTitle(t(title))
         dialog.setTextFormat(Qt.TextFormat.PlainText)
         dialog.setText(message)
-        proceed = dialog.addButton(action, QMessageBox.ButtonRole.DestructiveRole)
-        cancel = dialog.addButton("취소", QMessageBox.ButtonRole.RejectRole)
+        proceed = dialog.addButton(t(action), QMessageBox.ButtonRole.DestructiveRole)
+        cancel = dialog.addButton(t("취소"), QMessageBox.ButtonRole.RejectRole)
         dialog.setDefaultButton(cancel)
         dialog.exec()
         return dialog.clickedButton() == proceed
 
     def ask_preset_name(self, initial=""):
         dialog = QInputDialog(self)
-        dialog.setWindowTitle("사용자 프리셋")
-        dialog.setLabelText("프리셋 이름")
+        dialog.setWindowTitle(t("사용자 프리셋"))
+        dialog.setLabelText(t("프리셋 이름"))
         dialog.setTextValue(initial)
-        dialog.setOkButtonText("저장")
-        dialog.setCancelButtonText("취소")
+        dialog.setOkButtonText(t("저장"))
+        dialog.setCancelButtonText(t("취소"))
         return dialog.textValue().strip() if dialog.exec() else ""
 
     def save_preset_dialog(self):
@@ -537,7 +574,7 @@ class SettingsPanel(QFrame):
         if not name:
             return
         presets = self.custom_presets()
-        if name in presets and not self.confirm("프리셋 덮어쓰기", f"‘{name}’ 프리셋을 현재 설정으로 바꿀까요?", "덮어쓰기"):
+        if name in presets and not self.confirm("프리셋 덮어쓰기", t("‘{name}’ 프리셋을 현재 설정으로 바꿀까요?", name=name), "덮어쓰기"):
             return
         presets[name] = {"options": asdict(self.options()), "qualities": self.qualities.copy()}
         self.write_presets(presets, name)
@@ -550,7 +587,7 @@ class SettingsPanel(QFrame):
         name = self.ask_preset_name(old)
         if not name or name == old:
             return
-        if name in presets and not self.confirm("프리셋 덮어쓰기", f"기존 ‘{name}’ 프리셋을 바꿀까요?", "덮어쓰기"):
+        if name in presets and not self.confirm("프리셋 덮어쓰기", t("기존 ‘{name}’ 프리셋을 바꿀까요?", name=name), "덮어쓰기"):
             return
         presets[name] = presets.pop(old)
         self.write_presets(presets, name)
@@ -558,7 +595,7 @@ class SettingsPanel(QFrame):
     def delete_preset_dialog(self):
         name = (self.presets.currentData() or "").removeprefix("user/")
         presets = self.custom_presets()
-        if name in presets and self.confirm("프리셋 삭제", f"‘{name}’ 프리셋을 삭제할까요?", "삭제"):
+        if name in presets and self.confirm("프리셋 삭제", t("‘{name}’ 프리셋을 삭제할까요?", name=name), "삭제"):
             del presets[name]
             self.write_presets(presets)
 
@@ -586,10 +623,10 @@ class PreviewPane(QWidget):
         layout.addLayout(strip)
         controls = QHBoxLayout()
         self.play = button("", icon="play")
-        self.play.setAccessibleName("재생")
-        self.play.setToolTip("재생")
+        bind(self.play, "setAccessibleName", "재생")
+        bind(self.play, "setToolTip", "재생")
         self.seek = QSlider(Qt.Orientation.Horizontal)
-        self.seek.setAccessibleName("재생 위치")
+        bind(self.seek, "setAccessibleName", "재생 위치")
         self.time = label("00:00 / 00:00", "timing")
         controls.addWidget(self.play)
         controls.addWidget(self.seek, 1)
@@ -634,12 +671,12 @@ class PreviewPane(QWidget):
         active = self.player.isPlaying()
         title = "일시 정지" if active else "재생"
         self.play.setIcon(glyph("pause" if active else "play"))
-        self.play.setAccessibleName(title)
-        self.play.setToolTip(title)
+        bind(self.play, "setAccessibleName", title)
+        bind(self.play, "setToolTip", title)
 
     def player_error(self, error, text):
         if error != QMediaPlayer.Error.NoError:
-            self.message.emit(f"미리듣기 오류 · {text}")
+            self.message.emit(text)
 
     def loaded(self, status):
         if self.pending and status in (QMediaPlayer.MediaStatus.LoadedMedia,
@@ -672,16 +709,16 @@ class PreviewPane(QWidget):
         self.tracks.clear()
         self.output_folder = None
         if entry:
-            self.tracks.addItem("원본", str(entry.path))
+            self.tracks.add_caption("원본", str(entry.path))
             for stem, path in entry.outputs.items():
-                self.tracks.addItem(STEMS.get(stem, stem), str(path))
+                self.tracks.add_caption(STEMS.get(stem, stem), str(path))
                 self.output_folder = path.parent
             if prefer_result and entry.outputs:
                 self.tracks.setCurrentIndex(1)
             elif same:
                 select(self.tracks, previous)
         else:
-            self.tracks.addItem("파일 선택", None)
+            self.tracks.add_caption("파일 선택", None)
         self.tracks.blockSignals(False)
         self.play.setEnabled(bool(entry))
         self.tracks.setEnabled(bool(entry))
@@ -754,6 +791,12 @@ class MainWindow(QMainWindow):
     def __init__(self, settings=None):
         super().__init__()
         self.settings = settings or QSettings("Demucs Studio", "Demucs Studio")
+        preferred = QLocale.system().uiLanguages()
+        initial = "ko" if preferred and preferred[0].lower().startswith("ko") else "en"
+        self.apply_language(self.settings.value("language", initial))
+        self.log_records = deque(maxlen=1200)
+        self.finished_counts = {}
+        self.finished_elapsed = ""
         self.entries = []
         self.worker = None
         self.batch = []
@@ -768,7 +811,7 @@ class MainWindow(QMainWindow):
         self.probe_pool.setMaxThreadCount(2)
         self.probes = ProbeSignals(self)
         self.probes.ready.connect(self.probed)
-        self.setWindowTitle("Demucs Studio · 음원 분리")
+        bind(self, "setWindowTitle", "Demucs Studio · 음원 분리")
         self.setWindowIcon(glyph("brand", size=48))
         self.setAcceptDrops(True)
         self.setMinimumSize(780, 548)
@@ -789,6 +832,9 @@ class MainWindow(QMainWindow):
         workspace.addLayout(middle, 1)
         middle.addWidget(self.make_queue(), 5)
         self.options_panel = SettingsPanel(self.settings)
+        device = self.options_panel.device
+        device.currentIndexChanged.connect(lambda _: self.device_status.set_mode(device.currentData()))
+        self.device_status.set_mode(device.currentData())
         self.options_panel.setMinimumWidth(332)
         middle.addWidget(self.options_panel, 6)
         workspace.addWidget(self.make_footer())
@@ -799,13 +845,67 @@ class MainWindow(QMainWindow):
         self.clock = QTimer(self)
         self.clock.setInterval(500)
         self.clock.timeout.connect(self.update_total)
-        self.preview.message.connect(self.log_message)
+        self.preview.message.connect(lambda detail: self.log_message("미리듣기 오류 · {detail}", detail=detail))
         self.queue.itemSelectionChanged.connect(self.selection_changed)
         QShortcut(QKeySequence.StandardKey.Open, self, activated=self.browse_files)
         self.queue.addAction(self.remove_action)
         self.update_actions()
         screen = self.screen().availableGeometry()
         self.resize(min(1200, screen.width() - 24), min(800, screen.height() - 55))
+
+    @staticmethod
+    def apply_language(code):
+        set_language(code)
+        app = QApplication.instance()
+        QLocale.setDefault(QLocale("ko_KR" if language() == "ko" else "en_US"))
+        previous = getattr(app, "_qt_locale", None)
+        if previous is not None:
+            app.removeTranslator(previous)
+            previous.deleteLater()
+        app._qt_locale = None
+        if language() == "ko":
+            translation = QTranslator(app)
+            location = QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)
+            if translation.load("qtbase_ko", location):
+                app.installTranslator(translation)
+                app._qt_locale = translation
+            else:
+                translation.deleteLater()
+
+    def change_language(self):
+        code = self.language_box.currentData()
+        if code == language() or self.active or self.update_footer.installing:
+            return
+        self.apply_language(code)
+        self.settings.setValue("language", code)
+        self.settings.sync()
+        for item in [self, *self.findChildren(QObject)]:
+            for setter, (source, fields) in getattr(item, "_copy", {}).items():
+                getattr(item, setter)(t(source, **fields))
+            if isinstance(item, ComboBox):
+                item.retranslate()
+        for cards in self.findChildren(ChoiceCards):
+            for card in cards.buttons.values():
+                if "setToolTip" not in card._copy:
+                    caption = card.accessibleName()
+                    detail = card.accessibleDescription()
+                    card.setToolTip(f"{caption} · {detail}" if detail else caption)
+        self.set_queue_headers()
+        for entry in self.entries:
+            self.set_row(entry)
+        self.device_status.refresh()
+        self.update_footer.retranslate()
+        if self.finished_counts:
+            self.show_batch_summary()
+        self.log.setPlainText("\n".join(self.render_log(*record) for record in self.log_records))
+        self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
+        self.update_actions()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "brand_subtitle"):
+            self.brand_subtitle.setVisible(self.width() >= 940)
+            self.brand_divider.setVisible(self.width() >= 940)
 
     def make_header(self):
         header = QFrame()
@@ -817,17 +917,27 @@ class MainWindow(QMainWindow):
         logo.setPixmap(glyph("brand", size=33).pixmap(33, 33))
         bar.addWidget(logo)
         bar.addWidget(label("Demucs Studio", "brandTitle"))
-        split = QFrame()
-        split.setFixedSize(1, 16)
-        split.setObjectName("brandDivider")
-        bar.addWidget(split)
-        bar.addWidget(label("음원 분리 작업실", "brandSub"))
-        bar.addStretch()
+        self.brand_divider = QFrame()
+        self.brand_divider.setFixedSize(1, 16)
+        self.brand_divider.setObjectName("brandDivider")
+        bar.addWidget(self.brand_divider)
+        self.brand_subtitle = label("음원 분리 작업실", "brandSub")
+        bar.addWidget(self.brand_subtitle)
+        self.device_status = DeviceStatus(self.probe_pool)
+        self.device_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.device_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        bar.addWidget(self.device_status, 1)
         local = QFrame()
         local.setFixedSize(6, 6)
         local.setObjectName("localDot")
         bar.addWidget(local)
         bar.addWidget(label("로컬 처리", "local"))
+        self.language_box = combo([("ko", "한국어"), ("en", "English")])
+        self.language_box.setFixedWidth(93)
+        bind(self.language_box, "setAccessibleName", "표시 언어")
+        select(self.language_box, language())
+        self.language_box.currentIndexChanged.connect(self.change_language)
+        bar.addWidget(self.language_box)
         return header
 
     def make_queue(self):
@@ -864,11 +974,11 @@ class MainWindow(QMainWindow):
         drop_copy.addWidget(label("MP4 · MKV · WAV · FLAC · MP3 외", "dropHint"))
         drop_row.addLayout(drop_copy, 1)
         self.add = button("파일 추가", icon="plus")
-        self.add.setToolTip("파일 추가 (Ctrl+O)")
+        bind(self.add, "setToolTip", "파일 추가 (Ctrl+O)")
         drop_row.addWidget(self.add)
         layout.addWidget(self.drop_area)
         self.queue = QTableWidget(0, 4)
-        self.queue.setHorizontalHeaderLabels(["파일 이름", "길이", "상태", "진행률"])
+        self.set_queue_headers()
         self.queue.verticalHeader().setVisible(False)
         self.queue.verticalHeader().setDefaultSectionSize(36)
         header = self.queue.horizontalHeader()
@@ -886,10 +996,11 @@ class MainWindow(QMainWindow):
         self.queue.setMinimumWidth(0)
         self.queue.setMinimumHeight(70)
         self.queue.setWordWrap(False)
-        self.queue.setAccessibleName("배치 작업 대기열")
+        bind(self.queue, "setAccessibleName", "배치 작업 대기열")
         self.queue.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.queue.customContextMenuRequested.connect(self.queue_menu)
-        self.remove_action = QAction("대기열에서 제거", self.queue)
+        self.remove_action = QAction(self.queue)
+        bind(self.remove_action, "setText", "대기열에서 제거")
         self.remove_action.setShortcut(QKeySequence(Qt.Key.Key_Delete))
         self.remove_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.remove_action.triggered.connect(self.remove_selected)
@@ -902,6 +1013,9 @@ class MainWindow(QMainWindow):
         self.remove.clicked.connect(self.remove_selected)
         self.clear.clicked.connect(self.clear_queue)
         return panel
+
+    def set_queue_headers(self):
+        self.queue.setHorizontalHeaderLabels([t(s) for s in ("파일 이름", "길이", "상태", "진행률")])
 
     def make_footer(self):
         footer = QFrame()
@@ -926,13 +1040,13 @@ class MainWindow(QMainWindow):
         row.addWidget(self.log_toggle)
         self.cancel = QToolButton()
         self.cancel.setObjectName("cancel")
-        self.cancel.setText("취소")
+        bind(self.cancel, "setText", "취소")
         self.cancel.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(self.cancel)
-        menu.addAction("현재 파일 취소 · 다음 파일 계속", lambda: self.cancel_work(False))
-        menu.addAction("현재 파일 취소 · 전체 중지", lambda: self.cancel_work(True))
+        local_action(menu, "현재 파일 취소 · 다음 파일 계속", lambda: self.cancel_work(False))
+        local_action(menu, "현재 파일 취소 · 전체 중지", lambda: self.cancel_work(True))
         self.cancel.setMenu(menu)
-        self.cancel.setToolTip("현재 파일 또는 전체 작업 취소")
+        bind(self.cancel, "setToolTip", "현재 파일 또는 전체 작업 취소")
         row.addWidget(self.cancel)
         self.start = button("분리 시작", "primary")
         self.start.setIcon(glyph("play", "white", 15))
@@ -943,7 +1057,7 @@ class MainWindow(QMainWindow):
         self.total.setRange(0, 1000)
         self.total.setValue(0)
         self.total.setTextVisible(False)
-        self.total.setAccessibleName("전체 작업 진행률")
+        bind(self.total, "setAccessibleName", "전체 작업 진행률")
         layout.addWidget(self.total)
         layout.addWidget(self.log)
         return footer
@@ -953,8 +1067,9 @@ class MainWindow(QMainWindow):
             return
         extensions = " ".join(f"*.{ext}" for ext in sorted(AUDIO | VIDEO))
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "영상·음원 파일 추가", self.settings.value("lastInput", ""),
-            f"영상·음원 ({extensions});;모든 파일 (*)")
+            self, t("영상·음원 파일 추가"), self.settings.value("lastInput", ""),
+            t("영상·음원 ({extensions});;모든 파일 (*)", extensions=extensions),
+            options=QFileDialog.Option.DontUseNativeDialog)
         if paths:
             self.settings.setValue("lastInput", str(Path(paths[0]).parent))
             self.add_files(paths)
@@ -1002,7 +1117,7 @@ class MainWindow(QMainWindow):
             name.setToolTip(str(path))
             self.queue.setItem(row, 0, name)
             self.queue.setItem(row, 1, QTableWidgetItem("…"))
-            self.queue.setItem(row, 2, QTableWidgetItem(entry.status))
+            self.queue.setItem(row, 2, QTableWidgetItem(t(entry.status)))
             cell = QWidget()
             bar_layout = QHBoxLayout(cell)
             bar_layout.setContentsMargins(5, 0, 7, 0)
@@ -1010,14 +1125,14 @@ class MainWindow(QMainWindow):
             bar.setRange(0, 100)
             bar.setValue(0)
             bar.setTextVisible(False)
-            bar.setAccessibleName(f"{path.name} 진행률")
+            bind(bar, "setAccessibleName", "{name} 진행률", name=path.name)
             bar_layout.addWidget(bar)
             self.queue.setCellWidget(row, 3, cell)
             self.probe_pool.start(ProbeTask(path, self.probes))
         if first == 0 and self.entries:
             self.queue.selectRow(0)
         if rejected:
-            self.log_message("지원하지 않는 파일 · " + ", ".join(rejected))
+            self.log_message("지원하지 않는 파일 · {files}", files=", ".join(rejected))
             self.log_toggle.setChecked(True)
         self.update_actions()
 
@@ -1043,7 +1158,7 @@ class MainWindow(QMainWindow):
         if self.active or not self.queue.indexAt(point).isValid():
             return
         menu = QMenu(self)
-        again = menu.addAction("선택 파일 다시 대기", self.retry_selected)
+        again = local_action(menu, "선택 파일 다시 대기", self.retry_selected)
         again.setEnabled(self.retry.isEnabled())
         menu.addAction(self.remove_action)
         menu.exec(self.queue.viewport().mapToGlobal(point))
@@ -1079,9 +1194,11 @@ class MainWindow(QMainWindow):
         self.update_actions()
 
     def reset_footer(self):
+        self.finished_counts = {}
         self.total.setValue(0)
-        self.stage.setText("작업 대기 중")
-        self.timing.setText("경과 00:00   ·   남은 시간 —")
+        self.stage.setText(t("작업 대기 중"))
+        self.stage.setToolTip("")
+        self.timing.setText(t("경과 00:00   ·   남은 시간 —"))
 
     def update_actions(self):
         rows = self.selected_rows()
@@ -1094,6 +1211,9 @@ class MainWindow(QMainWindow):
         self.cancel.setEnabled(self.active and not self.stop_batch)
         self.start.setEnabled(not self.active and not self.update_footer.installing
                               and any(e.status == "대기" for e in self.entries))
+        can_switch = not self.active and not self.update_footer.installing
+        self.language_box.setEnabled(can_switch)
+        self.language_box.setToolTip(t("표시 언어" if can_switch else "작업이 끝난 후 언어를 변경할 수 있습니다."))
         self.count.setText(str(len(self.entries)))
 
     def start_batch(self):
@@ -1108,8 +1228,10 @@ class MainWindow(QMainWindow):
         self.stop_batch = False
         self.began = time.monotonic()
         self.fraction = 0.0
-        self.log_message(f"분리 시작 · {len(self.batch)}개 · {self.batch_options.model} · "
-                         f"{self.batch_options.format.upper()} · {self.batch_options.quality}")
+        self.finished_counts = {}
+        self.log_message("분리 시작 · {count}개 · {model} · {format} · {quality}",
+                         count=len(self.batch), model=self.batch_options.model,
+                         format=self.batch_options.format.upper(), quality=self.batch_options.quality)
         self.clock.start()
         self.update_actions()
         self.next_file()
@@ -1123,7 +1245,7 @@ class MainWindow(QMainWindow):
         self.last_stage = ""
         self.fraction = 0.0
         self.set_row(entry, 0)
-        self.log_message(f"{entry.path.name} · 처리 시작")
+        self.log_message("{name} · 처리 시작", name=entry.path.name)
         self.on_progress(0, "시작 중")
         self.worker = FileWorker(entry.path, self.batch_options, self)
         self.worker.progress.connect(self.on_progress)
@@ -1133,7 +1255,9 @@ class MainWindow(QMainWindow):
     def set_row(self, entry, value=None):
         row = self.entries.index(entry)
         cell = self.queue.item(row, 2)
-        status = f"{entry.status} · {entry.error}" if entry.error else entry.status
+        status = self.status_text(entry.status)
+        if entry.error:
+            status += " · " + translate_backend(entry.error, language())
         cell.setText(status)
         cell.setToolTip(status)
         if value is not None:
@@ -1146,12 +1270,13 @@ class MainWindow(QMainWindow):
             return
         entry = self.batch[self.batch_index]
         self.fraction = fraction
-        self.stage.setText(f"{self.batch_index + 1}/{len(self.batch)}  {entry.path.name}  ·  {detail}")
+        self.stage.setText(f"{self.batch_index + 1}/{len(self.batch)}  {entry.path.name}  ·  "
+                           f"{self.detail_text(detail)}")
         self.stage.setToolTip(self.stage.text())
         self.set_row(entry, fraction)
         if detail and detail != self.last_stage:
             self.last_stage = detail
-            self.log_message(detail)
+            self.log_message("{detail}", detail=detail)
         self.update_total()
 
     def update_total(self):
@@ -1159,15 +1284,16 @@ class MainWindow(QMainWindow):
             return
         progress = min(1.0, (self.batch_index + self.fraction) / len(self.batch))
         elapsed = time.monotonic() - self.began
-        remaining = time_text(elapsed * (1 - progress) / progress) if progress > 0.005 else "계산 중"
+        remaining = time_text(elapsed * (1 - progress) / progress) if progress > 0.005 else t("계산 중")
         self.total.setValue(int(progress * 1000))
-        self.timing.setText(f"전체 {progress:.0%}   ·   경과 {time_text(elapsed)}   ·   예상 남은 시간 {remaining}")
+        self.timing.setText(t("전체 {progress}   ·   경과 {elapsed}   ·   예상 남은 시간 {remaining}",
+                              progress=f"{progress:.0%}", elapsed=time_text(elapsed), remaining=remaining))
 
     def cancel_work(self, all_files):
         if self.worker:
             self.stop_batch = self.stop_batch or all_files
             self.worker.stop.set()
-            self.stage.setText("취소 중…")
+            self.stage.setText(t("취소 중…"))
             self.log_message("전체 작업 중지 요청" if all_files else "현재 파일 취소 요청")
             self.update_actions()
 
@@ -1179,7 +1305,8 @@ class MainWindow(QMainWindow):
         if worker.status == "완료":
             entry.outputs = worker.outputs
         self.set_row(entry, 1 if entry.status == "완료" else None)
-        self.log_message(f"{entry.path.name} · {entry.status}" + (f" · {entry.error}" if entry.error else ""))
+        self.log_message("{name} · {status}" + (" · {detail}" if entry.error else ""),
+                         name=entry.path.name, status=entry.status, detail=entry.error)
         if entry.error:
             self.log_toggle.setChecked(True)
         if entry.path == self.preview.source:
@@ -1194,18 +1321,49 @@ class MainWindow(QMainWindow):
         self.update_total()
         self.active = False
         self.clock.stop()
-        summary = "   ·   ".join(f"{status} {sum(e.status == status for e in self.batch)}개"
-                                for status in ["완료", "실패", "취소", "대기"] if any(e.status == status for e in self.batch))
-        self.stage.setText(summary)
-        self.stage.setToolTip(summary)
-        self.timing.setText(f"경과 {time_text(time.monotonic() - self.began)}")
-        self.log_message(summary)
+        self.finished_counts = {status: sum(e.status == status for e in self.batch)
+                                for status in ["완료", "실패", "취소", "대기"]}
+        self.finished_elapsed = time_text(time.monotonic() - self.began)
+        self.show_batch_summary()
+        self.log_message("{summary}", summary=self.finished_counts)
         self.update_actions()
         if self.close_after_stop:
             self.close()
 
-    def log_message(self, message):
-        self.log.appendPlainText(f"{datetime.now():%H:%M:%S}  {message}")
+    @staticmethod
+    def status_text(status):
+        if status == "취소" and language() == "en":
+            return t("취소됨")
+        return t(status)
+
+    @staticmethod
+    def detail_text(detail):
+        return t(detail) if detail == "시작 중" else translate_backend(detail, language())
+
+    def batch_summary(self, counts):
+        return "   ·   ".join(t("{status} {count}개", status=self.status_text(status), count=count)
+                              for status, count in counts.items() if count)
+
+    def show_batch_summary(self):
+        summary = self.batch_summary(self.finished_counts)
+        self.stage.setText(summary)
+        self.stage.setToolTip(summary)
+        self.timing.setText(t("경과 {elapsed}", elapsed=self.finished_elapsed))
+
+    def render_log(self, stamp, source, fields):
+        fields = dict(fields)
+        if "detail" in fields:
+            fields["detail"] = self.detail_text(fields["detail"])
+        if "status" in fields:
+            fields["status"] = self.status_text(fields["status"])
+        if "summary" in fields:
+            fields["summary"] = self.batch_summary(fields["summary"])
+        return stamp + "  " + t(source, **fields)
+
+    def log_message(self, source, **fields):
+        record = (datetime.now().strftime("%H:%M:%S"), source, fields)
+        self.log_records.append(record)
+        self.log.appendPlainText(self.render_log(*record))
 
     def closeEvent(self, event):
         if not self.update_footer.may_close():
@@ -1216,10 +1374,10 @@ class MainWindow(QMainWindow):
             if self.close_after_stop:
                 return
             confirm = QMessageBox(self)
-            confirm.setWindowTitle("작업 종료")
-            confirm.setText("처리 중인 파일을 취소하고 앱을 닫을까요?")
-            quit_button = confirm.addButton("취소 후 종료", QMessageBox.ButtonRole.DestructiveRole)
-            keep = confirm.addButton("계속 처리", QMessageBox.ButtonRole.RejectRole)
+            confirm.setWindowTitle(t("작업 종료"))
+            confirm.setText(t("처리 중인 파일을 취소하고 앱을 닫을까요?"))
+            quit_button = confirm.addButton(t("취소 후 종료"), QMessageBox.ButtonRole.DestructiveRole)
+            keep = confirm.addButton(t("계속 처리"), QMessageBox.ButtonRole.RejectRole)
             confirm.setDefaultButton(keep)
             confirm.exec()
             if confirm.clickedButton() == quit_button and self.active:

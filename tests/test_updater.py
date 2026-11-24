@@ -40,7 +40,7 @@ def test_new_version_downloads_and_verifies_all_parts(monkeypatch, tmp_path):
 def test_failed_download_removes_partial_installer(monkeypatch, tmp_path, condition):
     body = {"cancelled": b"setup", "truncated": b"a", "corrupt": b"wrong"}[condition]
     setup_response(monkeypatch, tmp_path, release(), body)
-    info = updater.check_update()
+    info = updater.check_update("1.0.0")
     with pytest.raises((ValueError, InterruptedError)):
         updater.download_install(info, lambda *_: None, lambda: condition == "cancelled")
     assert not list(tmp_path.iterdir())
@@ -57,4 +57,4 @@ def test_invalid_release_assets_are_rejected(monkeypatch, tmp_path, change):
         data = release(filenames=["DemucsStudio-Setup-x64.exe", "DemucsStudio-Setup-x64-2.bin"])
     setup_response(monkeypatch, tmp_path, data)
     with pytest.raises(ValueError):
-        updater.check_update()
+        updater.check_update("1.0.0")

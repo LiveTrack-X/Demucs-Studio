@@ -13,6 +13,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QMessageBox, QProgressDialog, QPushButton, QWidget,
 )
 
+from .backend_i18n import msg, translate_backend
+from .i18n import language
+
 
 class _UpdateSignals(QObject):
     checked = Signal(object, object)
@@ -38,6 +41,7 @@ class UpdateFooter(QWidget):
         self._launched = False
         self._cancel = None
         self._dialog = None
+        self._install_version = None
         self._signals = _UpdateSignals()
         self._signals.checked.connect(self._checked)
         self._signals.progress.connect(self._progress)
@@ -55,10 +59,9 @@ class UpdateFooter(QWidget):
         self.credit = QPushButton(f"v{backend.VERSION} | Created by LiveTrack")
         self.credit.setObjectName("versionCredit")
         self.credit.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.credit.setToolTip("GitHub 프로젝트 열기 · 오른쪽 클릭으로 업데이트 확인")
         self.credit.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(backend.REPO_URL)))
         self.credit.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
-        self.manual_check = QAction("업데이트 확인", self.credit)
+        self.manual_check = QAction(self.credit)
         self.manual_check.triggered.connect(lambda: self.check_now(manual=True))
         self.credit.addAction(self.manual_check)
         row.addWidget(self.update_button)
@@ -79,6 +82,16 @@ class UpdateFooter(QWidget):
         self._periodic = QTimer(self)
         self._periodic.setInterval(6 * 60 * 60 * 1000)
         self._periodic.timeout.connect(self.check_now)
+        self.retranslate()
+
+    def retranslate(self):
+        self.credit.setToolTip(msg("GitHub 프로젝트 열기 · 오른쪽 클릭으로 업데이트 확인"))
+        self.manual_check.setText(msg("업데이트 확인"))
+        if self._release:
+            self.update_button.setToolTip(msg("v{version} 업데이트", version=self._release.version))
+        if self._dialog:
+            self._dialog.setWindowTitle(msg("v{version} 업데이트", version=self._install_version))
+            self._dialog.setCancelButtonText(msg("취소"))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -117,16 +130,15 @@ class UpdateFooter(QWidget):
         self._notify_check = False
         if error:
             if manual:
-                QMessageBox.warning(self, "업데이트 확인 실패", str(error))
+                QMessageBox.warning(self, msg("업데이트 확인 실패"), translate_backend(str(error), language()))
             return
         self._release = release
         self.update_button.setVisible(release is not None)
-        if release:
-            self.update_button.setToolTip(f"v{release.version} 업데이트")
+        self.retranslate()
         if manual:
-            message = (f"v{release.version}을 사용할 수 있습니다. Update 버튼을 눌러 주세요."
-                       if release else "현재 사용할 수 있는 새 버전이 없습니다.")
-            QMessageBox.information(self, "업데이트 확인", message)
+            message = (msg("v{version}을 사용할 수 있습니다. Update 버튼을 눌러 주세요.", version=release.version)
+                       if release else msg("현재 사용할 수 있는 새 버전이 없습니다."))
+            QMessageBox.information(self, msg("업데이트 확인"), message)
 
     @Slot()
     def _update(self):
@@ -134,15 +146,16 @@ class UpdateFooter(QWidget):
         if not release or self.installing:
             return
         if self._is_busy():
-            QMessageBox.information(self, "업데이트", "분리 작업을 마친 후 업데이트해 주세요.")
+            QMessageBox.information(self, msg("업데이트"), msg("분리 작업을 마친 후 업데이트해 주세요."))
             return
         if not getattr(sys, "frozen", False):
             QDesktopServices.openUrl(QUrl(release.page_url))
             return
         size = release.size / 1024 ** 2
         answer = QMessageBox.question(
-            self, "업데이트 설치", f"v{release.version} ({size:,.0f} MB)을 설치할까요?\n"
-            "다운로드와 무결성 확인이 끝나면 앱을 닫고 설치 프로그램을 실행합니다.",
+            self, msg("업데이트 설치"),
+            msg("v{version} ({size} MB)을 설치할까요?\n다운로드와 무결성 확인이 끝나면 앱을 닫고 설치 프로그램을 실행합니다.",
+                version=release.version, size=f"{size:,.0f}"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
         )
         if (answer != QMessageBox.StandardButton.Yes or self._release != release
@@ -150,11 +163,12 @@ class UpdateFooter(QWidget):
             return
         cancel = Event()
         self._cancel = cancel
+        self._install_version = release.version
         self.busyChanged.emit(True)
         self.update_button.setEnabled(False)
         self.manual_check.setEnabled(False)
-        dialog = QProgressDialog("업데이트 준비 중…", "취소", 0, 100, self.window())
-        dialog.setWindowTitle(f"v{release.version} 업데이트")
+        dialog = QProgressDialog(msg("업데이트 준비 중…"), msg("취소"), 0, 100, self.window())
+        dialog.setWindowTitle(msg("v{version} 업데이트", version=release.version))
         dialog.setWindowModality(Qt.WindowModality.WindowModal)
         dialog.setAutoReset(False)
         dialog.setAutoClose(False)
@@ -202,7 +216,7 @@ class UpdateFooter(QWidget):
         self._dialog = None
         if not cancel.is_set() and not error:
             if self._is_busy():
-                error = "분리 작업이 진행 중입니다. 작업을 마친 후 다시 업데이트해 주세요."
+                error = msg("분리 작업이 진행 중입니다. 작업을 마친 후 다시 업데이트해 주세요.")
             else:
                 try:
                     self._backend.launch_installer(path)
@@ -242,9 +256,9 @@ class UpdateFooter(QWidget):
             self._close_after_cancel = False
             QTimer.singleShot(0, self.window().close)
         elif cleanup_error:
-            QMessageBox.warning(self, "업데이트 파일 정리 실패", str(cleanup_error))
+            QMessageBox.warning(self, msg("업데이트 파일 정리 실패"), translate_backend(str(cleanup_error), language()))
         elif error and not cancelled:
-            QMessageBox.warning(self, "업데이트 실패", str(error))
+            QMessageBox.warning(self, msg("업데이트 실패"), translate_backend(str(error), language()))
 
     def may_close(self) -> bool:
         """An explicit exit cancels outstanding downloads before closing the window."""
@@ -253,5 +267,5 @@ class UpdateFooter(QWidget):
         self._close_after_cancel = True
         self._cancel.set()
         if self._dialog:
-            self._dialog.setLabelText("다운로드를 취소한 후 닫는 중…")
+            self._dialog.setLabelText(msg("다운로드를 취소한 후 닫는 중…"))
         return False

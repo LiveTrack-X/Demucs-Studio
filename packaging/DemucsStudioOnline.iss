@@ -4,7 +4,7 @@
 
 [Setup]
 AppId=DemucsStudioOnline
-AppName=Demucs Studio 온라인 설치
+AppName={cm:OnlineSetupName}
 AppVersion={#AppVersion}
 AppPublisher=LiveTrack-X
 VersionInfoVersion={#AppVersion}
@@ -18,9 +18,25 @@ DisableReadyPage=yes
 DisableFinishedPage=yes
 CloseApplications=no
 WizardStyle=modern
+LanguageDetectionMethod=uilanguage
+ShowLanguageDialog=yes
+UsePreviousLanguage=no
 
 [Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
+
+[CustomMessages]
+english.OnlineSetupName=Demucs Studio Online Setup
+korean.OnlineSetupName=Demucs Studio 온라인 설치
+english.DownloadTitle=Downloading Demucs Studio
+korean.DownloadTitle=Demucs Studio 다운로드
+english.DownloadDetail=Downloading and verifying the installation files.
+korean.DownloadDetail=설치 파일을 내려받고 무결성을 확인합니다.
+english.LaunchError=Could not start the installer. %1
+korean.LaunchError=설치 프로그램을 시작할 수 없습니다. %1
+english.ExitError=The installer exited with code %1.
+korean.ExitError=설치 프로그램이 종료되었습니다 (코드 %1).
 
 [Code]
 var
@@ -28,7 +44,7 @@ var
 
 procedure InitializeWizard;
 begin
-  DownloadPage := CreateDownloadPage('Demucs Studio 다운로드', '설치 파일을 내려받고 무결성을 확인합니다.', nil);
+  DownloadPage := CreateDownloadPage(CustomMessage('DownloadTitle'), CustomMessage('DownloadDetail'), nil);
   DownloadPage.ShowBaseNameInsteadOfUrl := True;
 end;
 
@@ -53,7 +69,7 @@ begin
   end;
   if Result <> '' then Exit;
 
-  Arguments := '/SP- /NORESTART';
+  Arguments := '/SP- /NORESTART /LANG=' + ActiveLanguage;
   if WizardSilent then Arguments := Arguments + ' /VERYSILENT /SUPPRESSMSGBOXES';
   Directory := ExpandConstant('{param:DIR|}');
   if (Directory <> '') and (Pos('"', Directory) = 0) then
@@ -65,9 +81,9 @@ begin
   try
     if not Exec(ExpandConstant('{tmp}\DemucsStudio-Setup-x64.exe'), Arguments,
                 ExpandConstant('{tmp}'), SW_SHOWNORMAL, ewWaitUntilTerminated, Status) then
-      Result := '설치 프로그램을 시작할 수 없습니다. ' + SysErrorMessage(Status)
+      Result := FmtMessage(CustomMessage('LaunchError'), [SysErrorMessage(Status)])
     else if Status <> 0 then
-      Result := Format('설치 프로그램이 종료되었습니다 (코드 %d).', [Status]);
+      Result := FmtMessage(CustomMessage('ExitError'), [IntToStr(Status)]);
   finally
     if WasVisible then WizardForm.Show;
   end;

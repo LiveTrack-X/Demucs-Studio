@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from fractions import Fraction
 from pathlib import Path
 
+from .backend_i18n import msg
 from .config import Options, QUALITY_OPTIONS
 
 Progress = Callable[[float, str], None]
@@ -52,7 +53,7 @@ def _binary(name: str) -> str:
     located = shutil.which(filename)
     if located:
         return located
-    raise RuntimeError(f"{filename} 파일을 찾을 수 없습니다. 설치 폴더의 bin 폴더를 확인해 주세요.")
+    raise RuntimeError(msg("{filename} 파일을 찾을 수 없습니다. 설치 폴더의 bin 폴더를 확인해 주세요.", filename=filename))
 
 
 def _number(value, default=0.0) -> float:
@@ -78,11 +79,11 @@ def probe(path: Path) -> MediaInfo:
         creationflags=_NO_WINDOW,
     )
     if result.returncode:
-        raise ValueError(f"미디어 정보를 읽을 수 없습니다. {result.stderr.strip()}")
+        raise ValueError(msg("미디어 정보를 읽을 수 없습니다. {detail}", detail=result.stderr.strip()))
     data = json.loads(result.stdout)
     audio = _preferred(data["streams"], "audio")
     if audio is None:
-        raise ValueError("입력 파일에 분리할 오디오 트랙이 없습니다.")
+        raise ValueError(msg("입력 파일에 분리할 오디오 트랙이 없습니다."))
     video = _preferred(data["streams"], "video")
     fmt = data.get("format", {})
     file_start = _number(fmt.get("start_time"))
@@ -113,7 +114,7 @@ def probe(path: Path) -> MediaInfo:
 
 def _check_cancel(cancelled: Cancelled) -> None:
     if cancelled():
-        raise InterruptedError("작업을 취소했습니다.")
+        raise InterruptedError(msg("작업을 취소했습니다."))
 
 
 @contextmanager
@@ -169,7 +170,7 @@ def _run(args: list[str], duration: float, label: str, progress: Progress,
             errors.seek(max(0, errors.tell() - 8192))
             log = errors.read().decode("utf-8", "replace").strip()
             if status:
-                raise _EncodingError(log or "FFmpeg 변환 실패")
+                raise _EncodingError(log or msg("FFmpeg 변환 실패"))
             _check_cancel(cancelled)
         finally:
             if process.poll() is None:
@@ -205,7 +206,7 @@ def decode(path: Path, dest: Path, info: MediaInfo, progress: Progress, cancelle
     with _new_output(dest):
         log = _run([*_input(path), "-map", f"0:{info.audio_index}", "-map_metadata", "-1",
                     "-af", ",".join(filters), "-ac", "2", "-c:a", "pcm_f32le", "-rf64", "auto",
-                    "-f", "wav", str(dest)], info.duration, "오디오 읽는 중", progress, cancelled,
+                    "-f", "wav", str(dest)], info.duration, msg("오디오 읽는 중"), progress, cancelled,
                    "info" if measure else "error")
         if measure:
             matched = re.search(r"\] Number of samples: (\d+)", log)
@@ -234,12 +235,12 @@ def _native_lossless(stem: Path, dest: Path, info: MediaInfo, fmt: str, quality:
     container = fmt.upper()
     if fmt == "wav" and count * 2 * {"16": 2, "24": 3, "32f": 4}[quality] + 4096 >= 2**32:
         container = "RF64"
-    label = "원본 샘플레이트로 음원 저장 중"
+    label = msg("원본 샘플레이트로 음원 저장 중")
     progress(0.0, label)
     with sf.SoundFile(stem) as src, sf.SoundFile(dest, mode="w", samplerate=rate, channels=2,
                                                 format=container, subtype=subtype) as output:
         if abs(src.frames - count * MODEL_RATE / rate) > 2:
-            raise ValueError("원본과 분리 음원의 샘플 길이가 일치하지 않습니다.")
+            raise ValueError(msg("원본과 분리 음원의 샘플 길이가 일치하지 않습니다."))
         for start in range(0, count, 131072):
             _check_cancel(cancelled)
             end = min(start + 131072, count)
@@ -251,7 +252,7 @@ def _native_lossless(stem: Path, dest: Path, info: MediaInfo, fmt: str, quality:
             first = start - left * up // down + radius // down
             block = filtered[first:first + end - start]
             if len(block) != end - start:
-                raise ValueError("원본 타임라인의 샘플 위치를 재구성하지 못했습니다.")
+                raise ValueError(msg("원본 타임라인의 샘플 위치를 재구성하지 못했습니다."))
             output.write(block)
             progress(end / count, label)
 
@@ -276,7 +277,7 @@ def export(source: Path, stem: Path, dest: Path, info: MediaInfo, options: Optio
     fmt = options.video_format if options.output_kind == "video" else options.audio_format
     quality = options.quality
     if quality not in QUALITY_CHOICES.get(fmt, ()):
-        raise ValueError("출력 형식에 맞는 음질을 선택해 주세요.")
+        raise ValueError(msg("출력 형식에 맞는 음질을 선택해 주세요."))
     _check_cancel(cancelled)
     with _new_output(dest):
         if options.output_kind == "audio":
@@ -285,11 +286,11 @@ def export(source: Path, stem: Path, dest: Path, info: MediaInfo, options: Optio
             else:
                 _run([*_input(stem), "-map", "0:a:0", "-map_metadata", "-1",
                       *_audio_args(fmt, quality, info), str(dest)], info.duration,
-                     "음원 저장 중", progress, cancelled)
+                     msg("음원 저장 중"), progress, cancelled)
             return
 
         if not info.has_video:
-            raise ValueError("원본 파일에 화면이 없습니다. 음원 출력을 선택해 주세요.")
+            raise ValueError(msg("원본 파일에 화면이 없습니다. 음원 출력을 선택해 주세요."))
         # Rebase the two streams to the same origin, retaining late audio or late
         # video. Do not stop when the shorter stream ends (a VOD may have a tail).
         origin = min(info.audio_start, info.video_start)
@@ -304,7 +305,7 @@ def export(source: Path, stem: Path, dest: Path, info: MediaInfo, options: Optio
             mux.extend(["-f", "matroska"])
         try:
             _run([*inputs, "-c:v", "copy", *mux, str(dest)], info.duration,
-                 "원본 화면과 분리 음원 저장 중", progress, cancelled)
+                 msg("원본 화면과 분리 음원 저장 중"), progress, cancelled)
         except _EncodingError as exc:
             # Only retry codec/container incompatibility, not read or disk errors.
             if not any(term in str(exc).lower() for term in
@@ -312,4 +313,4 @@ def export(source: Path, stem: Path, dest: Path, info: MediaInfo, options: Optio
                 raise
             _run([*inputs, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                   "-fps_mode", "passthrough", *mux, str(dest)], info.duration,
-                 "호환 영상으로 변환 중 (H.264)", progress, cancelled)
+                 msg("호환 영상으로 변환 중 (H.264)"), progress, cancelled)

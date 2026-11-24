@@ -3,7 +3,7 @@ import time
 import wave
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QLocale, QSettings
 from PySide6.QtWidgets import QApplication
 
 from demucs_gui.ui import Entry, MainWindow, select
@@ -147,3 +147,91 @@ def test_closing_window_releases_preview_media(application, tmp_path):
     window.close()
     assert window.preview.player.source().isEmpty()
     media.unlink()
+
+
+def test_switch_language_preserves_media_queue_settings_and_history(application, tmp_path, monkeypatch):
+    ini = str(tmp_path / "language-settings.ini")
+    settings = QSettings(ini, QSettings.Format.IniFormat)
+    settings.setValue("language", "ko")
+    window = MainWindow(settings)
+    panel = window.options_panel
+    name = "보컬 {name}"
+    media = tmp_path / (name + ".wav")
+    output = tmp_path / "보컬 결과.wav"
+    for path in (media, output):
+        with wave.open(str(path), "wb") as writer:
+            writer.setparams((2, 2, 44100, 0, "NONE", ""))
+            writer.writeframes(bytes(44100 * 4))
+    panel.format.buttons["flac"].click()
+    monkeypatch.setattr(panel, "ask_preset_name", lambda: name)
+    panel.save_button.click()
+    window.add_files([media])
+    entry = window.entries[0]
+    entry.outputs = {"vocals": output}
+    entry.status = "완료"
+    window.set_row(entry, 1)
+    window.preview.set_entry(entry, prefer_result=True)
+    raw_source = window.preview.player.source()
+    window.log_message("{name} · {status} · {detail}", name=media.name, status="완료", detail="저장 완료")
+    options = panel.options()
+
+    select(window.language_box, "en")
+    assert window.windowTitle() == "Demucs Studio · Audio separation"
+    assert window.language_box.accessibleName() == "Display language"
+    assert window.queue.item(0, 0).text() == media.name
+    assert window.queue.item(0, 2).text() == "Completed"
+    assert window.queue.horizontalHeaderItem(1).text() == "Length"
+    assert window.preview.player.source() == raw_source
+    assert window.preview.tracks.currentText() == "Vocals"
+    assert window.log.toPlainText().endswith(media.name + " · Completed · Export complete")
+    assert window.update_footer.manual_check.text() == "Check for updates"
+    assert panel.model.buttons["htdemucs_ft"].accessibleName() == "Best quality"
+    assert panel.quality.buttons["24"].accessibleName() == "24-bit lossless"
+    assert panel.quality_label.text() == "Bit depth"
+    assert panel.presets.currentText() == "My preset · " + name
+    assert panel.options() == options
+    window.close()
+
+    restored = MainWindow(QSettings(ini, QSettings.Format.IniFormat))
+    assert restored.start.text() == "Start separation"
+    assert restored.language_box.currentData() == "en"
+    select(restored.language_box, "ko")
+    assert restored.start.text() == "분리 시작"
+    assert restored.options_panel.presets.findText("내 프리셋 · " + name) >= 0
+    restored.close()
+
+
+def test_device_status_tracks_selection_in_both_languages(application, tmp_path):
+    settings = QSettings(str(tmp_path / "device.ini"), QSettings.Format.IniFormat)
+    settings.setValue("language", "ko")
+    window = MainWindow(settings)
+    devices = window.options_panel.device
+    window.device_status.detected("NVIDIA Test GPU", "")
+    assert window.device_status.text() == "분리 장치 · GPU (CUDA) · NVIDIA Test GPU"
+    select(devices, "cpu")
+    assert window.device_status.text() == "분리 장치 · CPU"
+    select(window.language_box, "en")
+    assert window.device_status.text() == "Device · CPU"
+    assert devices.accessibleName() == "Select processing device"
+    select(devices, "cuda")
+    assert window.device_status.text() == "Device · GPU (CUDA) · NVIDIA Test GPU"
+    window.device_status.detected("", "")
+    assert window.device_status.text() == "Device · CUDA GPU unavailable"
+    select(devices, "auto")
+    assert window.device_status.text() == "Device · CPU (auto)"
+    select(window.language_box, "ko")
+    assert window.device_status.text() == "분리 장치 · CPU (자동)"
+    window.close()
+
+
+@pytest.mark.parametrize("system_locale,initial,chosen", [("en_US", "en", "ko"), ("ko_KR", "ko", "en")])
+def test_saved_language_overrides_system_locale(application, tmp_path, monkeypatch, system_locale, initial, chosen):
+    monkeypatch.setattr(QLocale, "system", staticmethod(lambda: QLocale(system_locale)))
+    path = str(tmp_path / "locale.ini")
+    first = MainWindow(QSettings(path, QSettings.Format.IniFormat))
+    assert first.language_box.currentData() == initial
+    select(first.language_box, chosen)
+    first.close()
+    reopened = MainWindow(QSettings(path, QSettings.Format.IniFormat))
+    assert reopened.language_box.currentData() == chosen
+    reopened.close()

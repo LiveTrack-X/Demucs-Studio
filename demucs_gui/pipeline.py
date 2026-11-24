@@ -3,6 +3,7 @@ from tempfile import TemporaryDirectory
 from typing import Callable
 
 from . import engine, media
+from .backend_i18n import msg
 from .config import Options, STEMS
 
 
@@ -15,7 +16,7 @@ def process_file(
     """Publish a complete set of exports together. A retry gets its own directory."""
     def check_cancel() -> None:
         if cancelled():
-            raise InterruptedError("작업을 취소했습니다.")
+            raise InterruptedError(msg("작업을 취소했습니다."))
 
     def stage(start: float, size: float):
         def report(value: float, label: str) -> None:
@@ -26,10 +27,10 @@ def process_file(
     options.validate()
     source = Path(source).resolve(strict=True)
     check_cancel()
-    progress(0.0, "미디어 정보 확인")
+    progress(0.0, msg("미디어 정보 확인"))
     info = media.probe(source)
     if options.output_kind == "video" and not info.has_video:
-        raise ValueError("영상 출력에는 화면이 있는 원본 파일이 필요합니다. 음원 출력을 선택해 주세요.")
+        raise ValueError(msg("영상 출력에는 화면이 있는 원본 파일이 필요합니다. 음원 출력을 선택해 주세요."))
 
     base = Path(options.output_dir).expanduser() if options.output_dir.strip() else source.parent / "separated"
     base.mkdir(parents=True, exist_ok=True)
@@ -65,5 +66,5 @@ def process_file(
                 except FileExistsError:
                     pass  # Another instance finished the same source between check and rename.
             number += 1
-    progress(1.0, "저장 완료")
+    progress(1.0, msg("저장 완료"))
     return {name: target / filename for name, filename in names.items()}
