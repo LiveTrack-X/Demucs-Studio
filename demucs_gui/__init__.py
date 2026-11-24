@@ -1,0 +1,1 @@
+"""Local Demucs desktop application."""
