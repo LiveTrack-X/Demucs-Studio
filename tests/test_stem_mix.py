@@ -77,6 +77,22 @@ def test_quiet_harmonic_in_its_own_bins_responds_to_loud_surrounding_backing(tmp
                                    atol=1e-6, rtol=0)
 
 
+def test_short_transient_uses_surrounding_backing_across_a_block_boundary(tmp_path, monkeypatch):
+    frames = np.arange(32768)
+    t = (frames - 12288) / 44100  # The transient peaks exactly on a small-block edge.
+    burst = 0.18 * np.exp(-0.5 * (t / 0.008) ** 2) * np.sin(2 * np.pi * frames * 90 / 2048)
+    backing = 0.24 * np.sin(2 * np.pi * frames * 32 / 2048)
+    stem = np.column_stack((burst, -burst)).astype("float32")
+    mix = stem + np.column_stack((backing, backing)).astype("float32")
+    large = render(tmp_path, mix, stem, 100, 6)
+    monkeypatch.setattr(stem_mix, "_BLOCK", 4096)
+    small = render(tmp_path, mix, stem, 100, 6)
+    np.testing.assert_allclose(small, large, atol=2e-7, rtol=0)
+    core = np.abs(t) < 0.008
+    change_db = 10 * np.log10(np.sum(small[core] ** 2) / np.sum(stem[core] ** 2))
+    assert -6 <= change_db <= -1
+
+
 def test_renderer_stops_between_blocks_without_modifying_original(tmp_path):
     mix = np.full((65543, 2), 0.2, dtype=np.float32)
     stem = np.full_like(mix, 0.01)
